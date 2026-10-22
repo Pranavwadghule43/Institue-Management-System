@@ -1,0 +1,399 @@
+/* ==========================================================================
+   Tablet & mobile layouts — PARKED for a later phase.
+   Phase 1 is laptop/PC only (min-width 1280px, see base.css), so this file is
+   intentionally NOT imported in main.tsx. To enable responsive layouts later:
+     1. import './styles/responsive.css' in src/main.tsx (after pages.css)
+     2. remove `min-width` from body in base.css
+     3. set the viewport meta in index.html back to width=device-width
+   ========================================================================== */
+
+/* from layout.css */
+@media (max-width: 1100px) {
+  .user-btn__meta,
+  .role-switch__label {
+    display: none;
+  }
+}
+
+/* from layout.css */
+@media (max-width: 1023px) {
+  .shell,
+  .shell.is-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 280px;
+    transform: translateX(-100%);
+    transition: transform 0.25s var(--ease);
+    box-shadow: var(--shadow-lg);
+  }
+  .shell.is-drawer-open .sidebar {
+    transform: none;
+  }
+  .shell.is-drawer-open .scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    z-index: 35;
+    animation: fade-in 0.2s;
+  }
+  /* drawer always shows full labels */
+  .shell.is-collapsed .sidebar__brand img.full,
+  .shell.is-collapsed .sidebar__brand-text,
+  .shell.is-collapsed .nav-section__label,
+  .shell.is-collapsed .nav-item__label,
+  .shell.is-collapsed .nav-item__chev,
+  .shell.is-collapsed .nav-sub,
+  .shell.is-collapsed .backup-chip > div {
+    display: revert;
+  }
+  .shell.is-collapsed .sidebar__brand img.mark {
+    display: none;
+  }
+  .shell.is-collapsed .nav-item {
+    justify-content: flex-start;
+    padding: 0 12px;
+  }
+  .content {
+    padding: 20px 20px 40px;
+  }
+}
+
+/* from layout.css */
+@media (max-width: 640px) {
+  .topbar {
+    padding: 0 12px 0 8px;
+    gap: 6px;
+  }
+  .topbar__search {
+    width: 40px;
+    padding: 0;
+    justify-content: center;
+    border-color: transparent;
+    background: transparent;
+  }
+  .topbar__search span,
+  .topbar__search .kbd {
+    display: none;
+  }
+  .topbar .hide-sm {
+    display: none !important;
+  }
+  .content {
+    padding: 16px 16px 40px;
+  }
+  h1 {
+    font-size: var(--fs-xl);
+  }
+  .page-head {
+    align-items: flex-start;
+  }
+  .page-head__actions {
+    width: 100%;
+  }
+}
+
+/* from layout.css */
+@media (max-width: 1023px) {
+  .hide-lg {
+    display: none !important;
+  }
+  .show-md {
+    display: inline-flex !important;
+  }
+}
+
+/* from layout.css */
+@media (max-width: 640px) {
+  .show-sm-flex {
+    display: flex !important;
+  }
+}
+
+/* from layout.css */
+@media (max-width: 1100px) {
+  .appfoot__keys {
+    display: none !important;
+  }
+}
+
+/* from layout.css */
+@media (max-width: 640px) {
+  .appfoot {
+    display: none;
+  }
+}
+
+/* from components.css */
+@media (max-width: 720px) {
+  .table-wrap.responsive {
+    display: none;
+  }
+  .card-list {
+    display: block;
+  }
+}
+
+/* from components.css */
+@media (max-width: 1023px) {
+  .shell.is-collapsed .sidebar [data-tip]:hover::after {
+    display: none;
+  }
+}
+
+/* from components.css */
+@media (max-width: 720px) {
+  .form-grid,
+  .form-grid.cols-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .choice-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .modal__foot {
+    flex-direction: column-reverse;
+  }
+  .modal__foot .btn {
+    width: 100%;
+  }
+}
+
+/* from components.css */
+@media (max-width: 720px) {
+  .paymodes.dense {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .paymodes.dense button:nth-child(-n + 3) {
+    border-bottom: 1px solid var(--line);
+  }
+  .paymodes.dense button:nth-child(3) {
+    border-right: 0;
+  }
+}
+
+/* from pages.css */
+@media (max-width: 900px) {
+  .login {
+    grid-template-columns: 1fr;
+  }
+  .login__brand {
+    display: none;
+  }
+  .login__mobile-logo {
+    display: block;
+  }
+}
+
+/* from pages.css */
+@media (max-width: 1280px) {
+  .quick {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .quick > :nth-child(3n) {
+    border-right: 0;
+  }
+  .quick > :nth-child(-n + 3) {
+    border-bottom: 1px solid var(--line);
+  }
+  .two-col,
+  .two-col.wide-side {
+    grid-template-columns: minmax(0, 1fr) 320px;
+  }
+}
+
+/* from pages.css */
+@media (max-width: 1100px) {
+  .dash-grid,
+  .dash-grid.even,
+  .two-col,
+  .two-col.wide-side {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sticky-side {
+    position: static;
+  }
+  .report-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* from pages.css */
+@media (max-width: 900px) {
+  .kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .kpis .kpi:nth-child(4n) {
+    border-right: 1px solid var(--line);
+  }
+  .kpis .kpi:nth-child(2n) {
+    border-right: 0;
+  }
+  .kpis .kpi:nth-last-child(-n + 4) {
+    border-bottom: 1px solid var(--line);
+  }
+  .kpis .kpi:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+  .fee-hero,
+  .ledger-sum {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .fee-hero > div:nth-child(2n),
+  .ledger-sum > div:nth-child(2n) {
+    border-right: 0;
+  }
+  .fee-hero > div:nth-child(-n + 2),
+  .ledger-sum > div:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--line);
+  }
+  .ledger-sum .op {
+    display: none;
+  }
+  .ledger-sum .net {
+    border-radius: 0 0 var(--r-lg) 0;
+  }
+}
+
+/* from pages.css */
+@media (max-width: 640px) {
+  .quick {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .quick > * {
+    border-bottom: 1px solid var(--line);
+    border-right: 1px solid var(--line) !important;
+  }
+  .quick > :nth-child(2n) {
+    border-right: 0 !important;
+  }
+  .quick > :nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+  .quick small {
+    display: none;
+  }
+  .kpi {
+    padding: 14px;
+  }
+  .kpi__value {
+    font-size: 21px;
+  }
+  .mini-stats {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+  .paper__head,
+  .paper__title,
+  .paper__body,
+  .paper__foot {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+  .paper__grid {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .stamp {
+    top: 150px;
+    font-size: 16px;
+  }
+  .diff {
+    grid-template-columns: 1fr;
+  }
+  .fee-hero strong,
+  .ledger-sum strong {
+    font-size: 18px;
+  }
+  .batch-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* from pages.css */
+@media (max-width: 1180px) {
+  .billdesk {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .billdesk__preview {
+    position: static;
+  }
+}
+
+/* from pages.css */
+@media (max-width: 640px) {
+  .lines__head {
+    display: none;
+  }
+  .line {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'name actions' 'qty amt';
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .line > :nth-child(1) {
+    grid-area: name;
+  }
+  .line > :nth-child(2) {
+    grid-area: qty;
+    text-align: left;
+  }
+  .line > :nth-child(3) {
+    display: none;
+  }
+  .line > :nth-child(4) {
+    grid-area: amt;
+  }
+  .line > :nth-child(5) {
+    grid-area: actions;
+  }
+  .addbar__row {
+    flex-wrap: wrap;
+  }
+  .addbar__row .combo {
+    flex-basis: 100% !important;
+  }
+  .addbar__row .btn {
+    flex: 1;
+  }
+  .paper--bill .paper__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* from pages.css */
+@media (max-width: 1100px) {
+  .ledger__group {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ledger__title {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 8px 16px;
+    border-radius: 0 !important;
+  }
+  .ledger__group:first-child .ledger__title {
+    border-radius: var(--r-lg) var(--r-lg) 0 0 !important;
+  }
+}
+
+/* from pages.css */
+@media (max-width: 760px) {
+  .ledger__cells {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .ledger .cell:nth-child(2n) {
+    border-right: 0;
+  }
+  .ledger .cell:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--line);
+  }
+  .ledger .cell strong {
+    font-size: 19px;
+  }
+  .shortcuts .push {
+    margin-left: 0;
+  }
+}
