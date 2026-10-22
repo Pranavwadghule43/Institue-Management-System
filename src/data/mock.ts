@@ -3,7 +3,7 @@
    "today" so the demo always looks current. */
 import type {
   AuditEntry, Backup, Batch, Bill, Course, Customer, Expense, Installment, Job, JobDoc, JobEvent,
-  JobStatus, PayMode, Payment, Priority, Service, ServiceCategory, Staff, Student, StudentStatus,
+  JobStatus, PayMode, Payment, Priority, Service, ServiceCategory, Staff, Student, StudentStatus, Enquiry, CourseSubtype,
 } from './types';
 
 let seed = 20261012;
@@ -60,6 +60,8 @@ export const courses: Course[] = [
   { id: 'C9', code: 'DTP', name: 'Desktop Publishing', duration: 4, fee: 8000, description: 'CorelDRAW, Photoshop and PageMaker.', active: false },
 ];
 export const courseById = (id: string) => courses.find((c) => c.id === id)!;
+export const courseSubtypes: CourseSubtype[] = [];
+export const enquiries: Enquiry[] = [];
 
 const teachers = ['Neha Gupta', 'Vikas Mishra', 'Pooja Tiwari', 'Arjun Mehta'];
 export const batches: Batch[] = [
@@ -310,7 +312,7 @@ export const billSubtotal = (b: Bill) => b.items.reduce((s, it) => s + it.qty * 
 
 /* ------------------------------ Expenses ------------------------------ */
 
-export const expenseCategories = ['Rent', 'Salary', 'Electricity', 'Internet & Phone', 'Stationery', 'Printer & Toner', 'Maintenance', 'Marketing', 'Refreshments', 'Miscellaneous'];
+export const expenseCategories = ['Rent', 'Salary', 'Electricity', 'Internet & Phone', 'Stationery', 'Printer & Toner', 'Maintenance', 'Marketing', 'Refreshments', 'Miscellaneous', 'Other'];
 export const expenses: Expense[] = [];
 let expSeq = 0;
 const addExp = (offset: number, amount: number, category: string, remark: string, mode: PayMode = 'Cash', attachment?: string) => {

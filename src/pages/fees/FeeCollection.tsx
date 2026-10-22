@@ -14,7 +14,7 @@ import { isDigital, PAY_LABEL } from '../../lib/payModes';
 
 export default function FeeCollection() {
   useStore();
-  const { user } = useApp();
+  const { user, toast } = useApp();
   const nav = useNavigate();
   const [params, setParams] = useSearchParams();
   const sid = params.get('student');
@@ -209,10 +209,15 @@ export default function FeeCollection() {
           onConfirm={() => {
             setBusy(true);
             setTimeout(() => {
-              const p = collectFee(student.id, Number(amount), mode, ref, remark, user.id);
-              setBusy(false);
-              setConfirm(false);
-              setDone(p);
+              try {
+                const p = collectFee(student.id, Number(amount), mode, ref, remark, user.id);
+                setConfirm(false);
+                setDone(p);
+              } catch (error) {
+                toast('error', error instanceof Error ? error.message : 'Payment could not be saved');
+              } finally {
+                setBusy(false);
+              }
             }, 800);
           }}
         >

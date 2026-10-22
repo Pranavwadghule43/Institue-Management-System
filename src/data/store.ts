@@ -3,7 +3,8 @@
    once the real API is wired (see 08_FRONTEND_ARCHITECTURE). */
 import { useSyncExternalStore } from 'react';
 import * as M from './mock';
-import type { Bill, BillItem, Customer, Expense, JobStatus, PayMode, Payment, Student } from './types';
+import type { Bill, BillItem, Customer, Enquiry, EnquiryStatus, Expense, JobStatus, PayMode, Payment, Student } from './types';
+import { addMonthsClamped } from '../lib/schedule';
 
 let version = 0;
 const listeners = new Set<() => void>();
@@ -175,6 +176,8 @@ function log(actor: string, action: string, entity: string, entityId: string, su
 }
 
 export function collectFee(studentId: string, amount: number, mode: PayMode, reference: string, remark: string, by: string): Payment {
+  const student = M.students.find((s) => s.id === studentId);
+  if (!student || !Number.isFinite(amount) || amount <= 0 || amount > balanceFor(student)) throw new Error('Payment must be positive and within the outstanding balance.');
   const last = M.payments[M.payments.length - 1];
   const n = parseInt(last.receiptNo.split('-')[2], 10) + 1;
   const p: Payment = {
@@ -189,8 +192,27 @@ export function collectFee(studentId: string, amount: number, mode: PayMode, ref
   return p;
 }
 
+export function nextStudentId() {
+  const used = [...M.students.map((s) => s.id), ...M.payments.map((p) => p.studentId)];
+  const last = Math.max(0, ...used.map((id) => Number(id.split('-').pop()) || 0));
+  return `UC-${M.TODAY.getFullYear()}-${String(last + 1).padStart(4, '0')}`;
+}
+
 export function admitStudent(input: Omit<Student, 'id' | 'installments' | 'lastReminded' | 'status' | 'admissionDate'> & { initial: number; installments: number; firstDue: Date; mode: PayMode }, by: string) {
-  const id = `UC-${M.TODAY.getFullYear()}-${String(M.students.length + 1).padStart(4, '0')}`;
+  if (!M.courses.some((c) => c.id === input.courseId && c.active)) throw new Error('Choose an active course.');
+  if (!M.batches.some((b) => b.id === input.batchId && b.courseId === input.courseId && b.status !== 'Completed')) throw new Error('Choose a valid time slot for the course.');
+  if (input.subtypeId && !M.courseSubtypes.some((s) => s.id === input.subtypeId && s.courseId === input.courseId && s.active)) throw new Error('Choose a sub-type of the selected course.');
+  if (!Number.isFinite(input.courseFee) || !Number.isFinite(input.discount) || input.discount < 0 || input.discount > input.courseFee) throw new Error('Invalid course fee or discount.');
+  if (input.enquiryId) {
+    const enquiry = M.enquiries.find((e) => e.id === input.enquiryId);
+    if (!enquiry || enquiry.status === 'Converted' || enquiry.studentId || M.students.some((s) => s.enquiryId === input.enquiryId)) throw new Error('This enquiry is already converted or unavailable.');
+    if (enquiry.courseId && enquiry.courseId !== input.courseId) throw new Error('The admission course must match the enquiry.');
+  }
+  if (input.installments < 0 || input.installments > 8 || !Number.isInteger(input.installments)) throw new Error('Choose up to eight installments.');
+  if (input.initial < 0 || input.initial > input.courseFee - input.discount) throw new Error('Invalid initial payment.');
+  if ((input.courseFee - input.discount - input.initial > 0) !== (input.installments > 0)) throw new Error('Set installments for the outstanding balance.');
+  if (input.installments > 0 && Number.isNaN(input.firstDue.getTime())) throw new Error('Choose a valid first due date.');
+  const id = nextStudentId();
   const net = input.courseFee - input.discount;
   const rest = net - input.initial;
   const per = input.installments ? Math.floor(rest / input.installments / 50) * 50 : 0;
@@ -199,19 +221,51 @@ export function admitStudent(input: Omit<Student, 'id' | 'installments' | 'lastR
   for (let k = 1; k <= input.installments; k++) {
     const amt = k === input.installments ? net - alloc : per;
     alloc += amt;
-    const due = new Date(input.firstDue);
-    due.setMonth(due.getMonth() + (k - 1));
+    const due = addMonthsClamped(input.firstDue, k - 1);
     insts.push({ no: k, due, amount: amt, paid: 0 });
   }
   const { initial, installments, firstDue, mode, ...rest2 } = input;
   void installments; void firstDue;
   const s: Student = { ...rest2, id, installments: insts, lastReminded: null, status: 'Active', admissionDate: new Date() };
   M.students.push(s);
-  log(by, 'STUDENT_CREATED', 'Student', id, `New admission — ${s.name} (${M.courseById(s.courseId).code})`);
+  if (input.enquiryId) {
+    const enquiry = M.enquiries.find((e) => e.id === input.enquiryId)!;
+    enquiry.status = 'Converted';
+    enquiry.studentId = id;
+    enquiry.handledBy = by;
+    enquiry.activity.push({ at: new Date(), by, action: 'Admission confirmed', status: 'Converted', note: `Student ${id} created` });
+    log(by, 'ENQUIRY_CONVERTED', 'Enquiry', enquiry.id, `${enquiry.id} converted to ${id}`);
+  }
+  log(by, 'STUDENT_CREATED', 'Student', id, `Admission confirmed — ${s.name} (${M.courseById(s.courseId).code})`);
   let payment: Payment | undefined;
   if (initial > 0) payment = collectFee(id, initial, mode, '', 'Admission payment', by);
   emit();
   return { student: s, payment };
+}
+
+export function createEnquiry(input: Pick<Enquiry, 'name' | 'phone' | 'fatherName' | 'email' | 'address' | 'aadhaar' | 'reference' | 'courseId' | 'subtypeId'>, by: string) {
+  if (!input.name.trim() || !/^[6-9]\d{9}$/.test(input.phone.replace(/\D/g, ''))) throw new Error('Name and a valid mobile number are required.');
+  if (input.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email)) throw new Error('Enter a valid email address.');
+  if (input.courseId && !M.courses.some((c) => c.id === input.courseId && c.active)) throw new Error('Choose an active course.');
+  if (input.aadhaar && !/^\d{12}$/.test(input.aadhaar.replace(/\D/g, ''))) throw new Error('Aadhaar must contain 12 digits when provided.');
+  if (input.subtypeId && !M.courseSubtypes.some((s) => s.id === input.subtypeId && s.courseId === input.courseId && s.active)) throw new Error('Choose a sub-type of the selected course.');
+  const id = `EQ-${M.TODAY.getFullYear()}-${String(M.enquiries.length + 1).padStart(4, '0')}`;
+  const enquiry: Enquiry = { ...input, id, status: 'New', handledBy: by, createdAt: new Date(), activity: [{ at: new Date(), by, action: 'Enquiry created', status: 'New', note: '' }] };
+  M.enquiries.unshift(enquiry);
+  log(by, 'ENQUIRY_CREATED', 'Enquiry', id, `Enquiry created for ${input.name}`);
+  emit();
+  return enquiry;
+}
+
+export function updateEnquiry(id: string, status: Exclude<EnquiryStatus, 'Converted'>, note: string, by: string) {
+  const enquiry = M.enquiries.find((e) => e.id === id);
+  if (!enquiry || enquiry.status === 'Converted') throw new Error('Converted enquiries cannot be changed.');
+  const before = enquiry.status;
+  enquiry.status = status;
+  enquiry.handledBy = by;
+  enquiry.activity.push({ at: new Date(), by, action: 'Status updated', status, note: note.trim() });
+  log(by, 'ENQUIRY_UPDATED', 'Enquiry', id, `${before} → ${status}`, { status: before }, { status });
+  emit();
 }
 
 export function addExpense(e: Omit<Expense, 'id'>) {
@@ -283,12 +337,6 @@ export function addCustomer(c: Omit<Customer, 'id' | 'createdAt'>, by: string) {
 
 export function markReminded(studentId: string) {
   M.studentById(studentId).lastReminded = new Date();
-  emit();
-}
-
-export function backupNow(by: string) {
-  M.backups.unshift({ id: `BKN${Date.now()}`, at: new Date(), type: 'Manual', size: '48.4 MB', status: 'Success', verified: true });
-  log(by, 'BACKUP_COMPLETED', 'System', 'BK', 'Manual backup completed');
   emit();
 }
 

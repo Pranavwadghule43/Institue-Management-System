@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Download, Paperclip, Pencil, Plus, Receipt, Search, SearchX, Trash2, Upload } from 'lucide-react';
+import { Download, Paperclip, Pencil, Plus, Receipt, Search, SearchX, Trash2 } from 'lucide-react';
 import { useApp } from '../app/AppContext';
 import {
   Confirm, Drawer, Empty, Field, Menu, MoneyInput, PageHeader, Pagination, Panel, Progress, Segmented, SkeletonRows, useDebounced, useLoading, usePaged,
@@ -212,7 +212,7 @@ export default function Expenses() {
 }
 
 function AddExpense({ open, onClose, onSave }: { open: boolean; onClose: () => void; onSave: (e: Omit<Expense, 'id' | 'by'>) => void }) {
-  const blank = { date: db.TODAY.toISOString().slice(0, 10), amount: '' as number | '', category: '', mode: 'Cash' as PayMode, remark: '', attachment: '' };
+  const blank = { date: db.TODAY.toISOString().slice(0, 10), amount: '' as number | '', category: '', mode: 'Cash' as PayMode, remark: '' };
   const [f, setF] = useState(blank);
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -239,7 +239,7 @@ function AddExpense({ open, onClose, onSave }: { open: boolean; onClose: () => v
                 const d = new Date(f.date);
                 const now = new Date();
                 d.setHours(now.getHours(), now.getMinutes());
-                onSave({ date: d, amount: Number(f.amount), category: f.category, mode: f.mode, remark: f.remark.trim(), attachment: f.attachment || undefined });
+                onSave({ date: d, amount: Number(f.amount), category: f.category, mode: f.mode, remark: f.remark.trim() });
                 setBusy(false);
                 setSubmitted(false);
                 setF(blank);
@@ -273,12 +273,6 @@ function AddExpense({ open, onClose, onSave }: { open: boolean; onClose: () => v
         </div>
         <Field label="Description" required className="span-2" error={submitted ? errs.remark : ''} htmlFor="er">
           <input id="er" className="input" placeholder="e.g. Printer toner refill" value={f.remark} onChange={(e) => setF({ ...f, remark: e.target.value })} />
-        </Field>
-        <Field label="Bill / receipt (optional)" className="span-2" hint="PDF, JPG or PNG up to 5 MB">
-          <button type="button" className="btn btn-secondary" onClick={() => setF({ ...f, attachment: f.attachment ? '' : 'expense_bill.jpg' })} style={{ justifyContent: 'flex-start', borderStyle: 'dashed', height: 48 }}>
-            {f.attachment ? <Paperclip /> : <Upload />}
-            {f.attachment ? `${f.attachment} — click to remove` : 'Attach a photo of the bill'}
-          </button>
         </Field>
       </div>
     </Drawer>

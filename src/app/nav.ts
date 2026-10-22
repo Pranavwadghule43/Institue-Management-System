@@ -17,17 +17,17 @@ export const NAV: NavSection[] = [
     label: 'Institute',
     items: [
       {
-        label: 'Students', icon: Users, perm: 'students.view',
+        label: 'Admission Desk', icon: Users, perm: 'students.view',
         children: [
           { label: 'Student List', to: '/students' },
-          { label: 'New Admission', to: '/students/new', perm: 'students.create' },
+          { label: 'Enquiry Dashboard', to: '/enquiries' },
+          { label: 'New Enquiry', to: '/enquiries/new', perm: 'students.create' },
         ],
       },
       {
         label: 'Academics', icon: BookOpen,
         children: [
           { label: 'Courses', to: '/academics/courses', perm: 'courses.manage' },
-          { label: 'Batches', to: '/academics/batches', perm: 'batches.manage' },
         ],
       },
       {

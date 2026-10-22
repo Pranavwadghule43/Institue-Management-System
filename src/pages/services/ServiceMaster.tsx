@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FileText, FolderOpen, Pencil, Plus, X } from 'lucide-react';
+import { FolderOpen, Pencil, Plus } from 'lucide-react';
 import { useApp } from '../../app/AppContext';
 import { Drawer, Field, Menu, MoneyInput, PageHeader, Switch } from '../../components/ui';
 import { db, touch, useStore } from '../../data/store';
@@ -12,22 +12,18 @@ export default function ServiceMaster() {
   const [cat, setCat] = useState('');
   const [edit, setEdit] = useState<Service | null>(null);
   const [price, setPrice] = useState<number | ''>('');
-  const [docs, setDocs] = useState<string[]>([]);
-  const [docInput, setDocInput] = useState('');
   const list = db.services.filter((s) => !cat || s.categoryId === cat);
 
   const open = (s: Service) => {
     setEdit(s);
     setPrice(s.price);
-    setDocs([...s.docs]);
-    setDocInput('');
   };
 
   return (
     <>
       <PageHeader
         title="Service master"
-        sub="Categories, current prices and required documents. Bills default to these rates; only Admin can override."
+        sub="Categories and current prices. Bills default to these rates; only Admin can override."
         crumbs={[['Services'], ['Service master']]}
         actions={
           <button className="btn btn-primary" onClick={() => toast('info', 'Add service', 'Opens the same editor for a new service.')}>
@@ -61,7 +57,6 @@ export default function ServiceMaster() {
               <thead>
                 <tr>
                   <th>Service</th>
-                  <th>Required documents</th>
                   <th className="ta-r">Price</th>
                   <th>Active</th>
                   <th />
@@ -75,19 +70,6 @@ export default function ServiceMaster() {
                       <div className="muted" style={{ fontSize: 12 }}>
                         {db.serviceCategories.find((c) => c.id === s.categoryId)?.name}
                       </div>
-                    </td>
-                    <td style={{ whiteSpace: 'normal', maxWidth: 360 }}>
-                      {s.docs.length ? (
-                        <div className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
-                          {s.docs.map((d) => (
-                            <span className="tag" key={d}>
-                              <FileText /> {d}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="muted">None</span>
-                      )}
                     </td>
                     <td className="ta-r num" style={{ fontWeight: 700 }}>
                       {money(s.price)}
@@ -135,7 +117,6 @@ export default function ServiceMaster() {
                 if (!edit) return;
                 const before = edit.price;
                 edit.price = Number(price);
-                edit.docs = docs;
                 if (before !== edit.price)
                   db.audit.unshift({ id: `S${Date.now()}`, at: new Date(), actor: user.id, action: 'SERVICE_RATE_UPDATED', entity: 'Service', entityId: edit.id, summary: `${edit.name} price updated`, ip: '192.168.1.11', before: { price: money(before) }, after: { price: money(edit.price) } });
                 touch();
@@ -152,44 +133,6 @@ export default function ServiceMaster() {
           <div className="stack" style={{ gap: 18 }}>
             <Field label="Current price" required hint={`Was ${money(edit.price)}`} htmlFor="sp">
               <MoneyInput id="sp" value={price} onChange={setPrice} xl />
-            </Field>
-            <Field label="Required documents" hint="Shown as a checklist on every job with this service" htmlFor="sd">
-              <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
-                {docs.map((d) => (
-                  <span key={d} className="chip">
-                    {d}
-                    <button style={{ border: 0, background: 'none', padding: 0, display: 'grid', color: 'inherit' }} onClick={() => setDocs(docs.filter((x) => x !== d))} aria-label={`Remove ${d}`}>
-                      <X size={13} />
-                    </button>
-                  </span>
-                ))}
-              </div>
-              <div className="row">
-                <input
-                  id="sd"
-                  className="input"
-                  placeholder="e.g. Passport Photo"
-                  value={docInput}
-                  onChange={(e) => setDocInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && docInput.trim()) {
-                      setDocs([...docs, docInput.trim()]);
-                      setDocInput('');
-                    }
-                  }}
-                />
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => {
-                    if (docInput.trim()) {
-                      setDocs([...docs, docInput.trim()]);
-                      setDocInput('');
-                    }
-                  }}
-                >
-                  Add
-                </button>
-              </div>
             </Field>
           </div>
         )}

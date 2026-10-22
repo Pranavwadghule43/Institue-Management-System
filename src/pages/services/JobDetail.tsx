@@ -4,8 +4,8 @@ import {
   Ban, Check, CheckCircle2, ChevronDown, Clock, Eye, FileText, FileUp, Loader2, Lock, MessageCircle, Phone, PauseCircle, ReceiptText, ShieldAlert, StickyNote, UserRound,
 } from 'lucide-react';
 import { useApp } from '../../app/AppContext';
-import { Avatar, BillStatusBadge, Confirm, Field, JobStatusBadge, Menu, PageHeader, Panel, PriorityTag } from '../../components/ui';
-import { customerJobs, db, setJobStatus, uploadDoc, useStore } from '../../data/store';
+import { Avatar, BillStatusBadge, Confirm, Field, JobStatusBadge, Menu, PageHeader, Panel } from '../../components/ui';
+import { customerJobs, db, setJobStatus, useStore } from '../../data/store';
 import type { JobStatus } from '../../data/types';
 import { date, dateTime, money } from '../../lib/format';
 import { waLink } from '../../lib/whatsapp';
@@ -65,7 +65,6 @@ export default function JobDetail() {
           <span className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
             {db.serviceById(j.serviceIds[0]).name}
             <JobStatusBadge s={j.status} />
-            <PriorityTag p={j.priority} />
           </span>
         }
         sub={
@@ -77,7 +76,7 @@ export default function JobDetail() {
         crumbs={[['Services'], ['Service jobs', '/services/jobs'], [j.id]]}
         actions={
           <>
-            <a className="btn btn-whatsapp" href={waLink(c.whatsapp, `Dear ${c.name}, update on your ${db.serviceById(j.serviceIds[0]).name} request (${j.id}): status is now "${j.status}". — Update Computers`)} target="_blank" rel="noreferrer">
+            <a className="btn btn-whatsapp" href={waLink(c.whatsapp, `Dear ${c.name}, update on your ${db.serviceById(j.serviceIds[0]).name} request (${j.id}): status is now "${j.status}". — Updaate Computers`)} target="_blank" rel="noreferrer">
               <MessageCircle /> Update customer
             </a>
             {can('service_jobs.status') && options.length > 0 && (
@@ -143,11 +142,10 @@ export default function JobDetail() {
           </Panel>
 
           <Panel
-            title="Required documents"
-            sub={j.docs.length ? `${up} of ${j.docs.length} uploaded · PDF, JPG or PNG up to 5 MB` : 'No documents required for this service'}
-            actions={j.docs.length > 0 && up === j.docs.length ? <span className="badge badge--success"><CheckCircle2 /> Complete</span> : undefined}
+            title="Historical attachments"
+            sub={j.docs.length ? `${up} of ${j.docs.length} uploaded · existing job records` : 'No attachments on this job'}
           >
-            {j.docs.length === 0 && <p className="muted" style={{ fontSize: 13 }}>Nothing to collect.</p>}
+            {j.docs.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No historical attachments.</p>}
             {j.docs.map((d) => (
               <div className="doc-row" key={d.name}>
                 <span className={`doc-ico ${d.uploaded ? 'ok' : 'missing'}`}>{d.uploaded ? <FileText /> : <FileUp />}</span>
@@ -172,19 +170,7 @@ export default function JobDetail() {
                       <Eye /> View
                     </button>
                   )
-                ) : (
-                  can('service_documents.upload') && (
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => {
-                        uploadDoc(j.id, d.name, user.id);
-                        toast('success', `${d.name} uploaded`, 'Stored privately · upload logged');
-                      }}
-                    >
-                      <FileUp /> Upload
-                    </button>
-                  )
-                )}
+                ) : null}
               </div>
             ))}
           </Panel>
@@ -239,10 +225,6 @@ export default function JobDetail() {
               <dt>Last date</dt>
               <dd>
                 <DueLabel j={j} />
-              </dd>
-              <dt>Priority</dt>
-              <dd>
-                <PriorityTag p={j.priority} />
               </dd>
               {j.formName && (
                 <>
@@ -308,7 +290,7 @@ export default function JobDetail() {
         tone={next === 'Cancelled' ? 'danger' : 'primary'}
         icon={next ? STATUS_ICON[next] : <UserRound />}
         title={`Move ${j.id} to ${next}?`}
-        body={next === 'Cancelled' ? 'Cancelled jobs are excluded from pending lists. Any unpaid bill should be cancelled by an Admin.' : next === 'Completed' && up < j.docs.length ? `${j.docs.length - up} required document(s) are still missing.` : `Current status: ${j.status}. The change is recorded in the status history.`}
+        body={next === 'Cancelled' ? 'Cancelled jobs are excluded from pending lists. Any unpaid bill should be cancelled by an Admin.' : `Current status: ${j.status}. The change is recorded in the status history.`}
         confirmLabel={`Mark ${next}`}
         busy={busy}
         disabled={(next === 'Cancelled' || next === 'On Hold') && note.trim().length < 3}

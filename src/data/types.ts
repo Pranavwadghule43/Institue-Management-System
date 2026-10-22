@@ -26,6 +26,39 @@ export interface Course {
   active: boolean;
 }
 
+export interface CourseSubtype {
+  id: string;
+  courseId: string;
+  name: string;
+  active: boolean;
+}
+
+export type EnquiryStatus = 'New' | 'Pending' | 'Follow-Up' | 'Converted';
+export interface EnquiryActivity {
+  at: Date;
+  by: string;
+  action: string;
+  status: EnquiryStatus;
+  note: string;
+}
+export interface Enquiry {
+  id: string;
+  name: string;
+  phone: string;
+  fatherName: string;
+  email: string;
+  address: string;
+  aadhaar: string;
+  reference: string;
+  courseId: string;
+  subtypeId: string;
+  status: EnquiryStatus;
+  handledBy: string;
+  createdAt: Date;
+  studentId?: string;
+  activity: EnquiryActivity[];
+}
+
 export interface Batch {
   id: string;
   name: string;
@@ -57,6 +90,8 @@ export interface Student {
   address: string;
   aadhaar: string;
   courseId: string;
+  subtypeId?: string;
+  enquiryId?: string;
   batchId: string;
   admissionDate: Date;
   courseFee: number;

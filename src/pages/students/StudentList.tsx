@@ -56,8 +56,8 @@ export default function StudentList() {
               <Download /> Export
             </button>
             {can('students.create') && (
-              <Link className="btn btn-primary" to="/students/new">
-                <UserPlus /> New admission
+              <Link className="btn btn-primary" to="/enquiries/new">
+                <UserPlus /> New enquiry
               </Link>
             )}
           </>
@@ -112,7 +112,7 @@ export default function StudentList() {
           filtered ? (
             <Empty icon={<SearchX />} title="No students match these filters" body="Try a different name or mobile number, or reset the filters." action={<button className="btn btn-secondary" onClick={reset}><RotateCcw /> Reset filters</button>} />
           ) : (
-            <Empty icon={<Users />} title="No students yet" body="Admit your first student to start tracking fees and receipts." action={<Link className="btn btn-primary" to="/students/new"><UserPlus /> New admission</Link>} />
+            <Empty icon={<Users />} title="No students yet" body="Create an enquiry to begin the admission process." action={<Link className="btn btn-primary" to="/enquiries/new"><UserPlus /> New enquiry</Link>} />
           )
         ) : (
           <>

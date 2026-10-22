@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { CalendarClock, FileCheck2, KanbanSquare, List, Plus, RotateCcw, Search, SearchX } from 'lucide-react';
+import { CalendarClock, KanbanSquare, List, Plus, RotateCcw, Search, SearchX } from 'lucide-react';
 import { useApp } from '../../app/AppContext';
 import {
-  Avatar, Drawer, Empty, Field, JobStatusBadge, JobStatusIcon, PageHeader, Pagination, PriorityTag, Segmented, SkeletonRows, jobTone, useDebounced, useLoading, usePaged,
+  Avatar, Drawer, Empty, Field, JobStatusBadge, JobStatusIcon, PageHeader, Pagination, Segmented, SkeletonRows, jobTone, useDebounced, useLoading, usePaged,
 } from '../../components/ui';
 import { db, jobAmount, touch, useStore } from '../../data/store';
 import type { Job, JobStatus, Priority } from '../../data/types';
@@ -41,7 +41,6 @@ export default function Jobs() {
   const [q, setQ] = useState('');
   const { role, user } = useApp();
   const [who, setWho] = useState(role === 'Staff' ? user.id : ''); // staff land on their own jobs
-  const [prio, setPrio] = useState('');
   const [status, setStatus] = useState<string>(statusParam ?? '');
   const dq = useDebounced(q);
   const loading = useLoading(450, [view]);
@@ -52,11 +51,10 @@ export default function Jobs() {
       .reverse()
       .filter((j) => !s || j.id.toLowerCase().includes(s) || db.customerById(j.customerId).name.toLowerCase().includes(s) || j.serviceIds.some((x) => db.serviceById(x).name.toLowerCase().includes(s)) || j.formName.toLowerCase().includes(s))
       .filter((j) => !who || j.assignees.includes(who))
-      .filter((j) => !prio || j.priority === prio)
       .filter((j) => view === 'board' || !status || j.status === status);
-  }, [dq, who, prio, status, view, db.jobs.length]);
+  }, [dq, who, status, view, db.jobs.length]);
   const pg = usePaged(rows, 12);
-  const filtered = !!(q || who || prio || (view === 'list' && status));
+  const filtered = !!(q || who || (view === 'list' && status));
 
   return (
     <>
@@ -97,12 +95,6 @@ export default function Jobs() {
               </option>
             ))}
           </select>
-          <select className="select" value={prio} onChange={(e) => setPrio(e.target.value)} aria-label="Priority">
-            <option value="">Any priority</option>
-            {['Urgent', 'High', 'Normal'].map((p) => (
-              <option key={p}>{p}</option>
-            ))}
-          </select>
           {view === 'list' && (
             <select className="select" value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
               <option value="">Any status</option>
@@ -117,7 +109,6 @@ export default function Jobs() {
               onClick={() => {
                 setQ('');
                 setWho('');
-                setPrio('');
                 setStatus('');
               }}
             >
@@ -172,7 +163,6 @@ export default function Jobs() {
                       <th>Service</th>
                       <th>Assigned</th>
                       <th>Last date</th>
-                      <th>Priority</th>
                       <th>Status</th>
                       <th className="ta-r">Amount</th>
                     </tr>
@@ -192,9 +182,6 @@ export default function Jobs() {
                         </td>
                         <td>
                           <DueLabel j={j} />
-                        </td>
-                        <td>
-                          <PriorityTag p={j.priority} />
                         </td>
                         <td>
                           <JobStatusBadge s={j.status} />
@@ -235,14 +222,12 @@ export default function Jobs() {
 }
 
 function JobCard({ j }: { j: Job }) {
-  const up = j.docs.filter((d) => d.uploaded).length;
   return (
     <Link to={`/services/jobs/${j.id}`} className="job-card">
       <div className="job-card__top">
         <span className="id" style={{ fontSize: 11.5 }}>
           {j.id}
         </span>
-        {j.priority !== 'Normal' && <PriorityTag p={j.priority} />}
       </div>
       <h4>
         {db.serviceById(j.serviceIds[0]).name}
@@ -255,11 +240,6 @@ function JobCard({ j }: { j: Job }) {
       <div className="job-card__foot">
         <AssigneeStack ids={j.assignees} />
         <span className="row" style={{ gap: 10 }}>
-          {j.docs.length > 0 && (
-            <span className="docs-meter" title="Documents uploaded">
-              <FileCheck2 /> {up}/{j.docs.length}
-            </span>
-          )}
           <DueLabel j={j} />
         </span>
       </div>
@@ -285,12 +265,10 @@ function NewJobDrawer({ open, onClose }: { open: boolean; onClose: () => void })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const docs = Array.from(new Set(f.serviceIds.flatMap((s) => db.serviceById(s).docs)));
   const total = f.serviceIds.reduce((t, s) => t + db.serviceById(s).price, 0);
   const errs = {
     customer: !f.customerId ? 'Select or add a customer' : '',
     services: !f.serviceIds.length ? 'Pick at least one service' : '',
-    assignees: !f.assignees.length ? 'Assign at least one staff member' : '',
     lastDate: f.lastDate < f.serviceDate ? 'Last date can’t be before the service date' : '',
   };
   const custMatches = db.customers.filter((c) => !cq || c.name.toLowerCase().includes(cq.toLowerCase()) || c.mobile.replace(/\s/g, '').includes(cq.replace(/\s/g, ''))).slice(0, 5);
@@ -301,7 +279,7 @@ function NewJobDrawer({ open, onClose }: { open: boolean; onClose: () => void })
     const id = `SJ-${1040 + db.jobs.length}`;
     db.jobs.push({
       id, customerId: f.customerId, serviceIds: f.serviceIds, formName: f.formName, serviceDate: new Date(f.serviceDate), lastDate: new Date(f.lastDate), priority: f.priority, assignees: f.assignees, status: 'Pending',
-      docs: docs.map((d) => ({ name: d, uploaded: false, sensitive: /aadhaar|pan|bank|form 16/i.test(d) && !/photo/i.test(d) })),
+      docs: [],
       history: [{ at: new Date(), by: user.id, status: 'Created', note: f.note || 'Job created at counter' }],
     });
     db.audit.unshift({ id: `J${Date.now()}`, at: new Date(), actor: user.id, action: 'JOB_CREATED', entity: 'Service Job', entityId: id, summary: `${id} created for ${db.customerById(f.customerId).name}`, ip: '192.168.1.11' });
@@ -316,7 +294,7 @@ function NewJobDrawer({ open, onClose }: { open: boolean; onClose: () => void })
       open={open}
       onClose={onClose}
       title="New service job"
-      sub="Customer intake — required documents are listed automatically"
+      sub="Customer intake for a digital service"
       foot={
         <>
           <span className="muted" style={{ marginRight: 'auto', fontSize: 13 }}>
@@ -392,14 +370,6 @@ function NewJobDrawer({ open, onClose }: { open: boolean; onClose: () => void })
           </div>
         </Field>
 
-        {docs.length > 0 && (
-          <div className="callout info">
-            <FileCheck2 />
-            <span>
-              <strong>Documents to collect:</strong> {docs.join(', ')}
-            </span>
-          </div>
-        )}
 
         <div className="form-grid">
           <Field label="Application / form name" className="span-2" htmlFor="fn">
@@ -413,23 +383,6 @@ function NewJobDrawer({ open, onClose }: { open: boolean; onClose: () => void })
           </Field>
         </div>
 
-        <div className="field">
-          <span className="field__label">Priority</span>
-          <Segmented block value={f.priority} onChange={(v) => setF({ ...f, priority: v })} options={(['Normal', 'High', 'Urgent'] as Priority[]).map((p) => ({ value: p, label: p }))} />
-        </div>
-
-        <Field label="Assign to" required error={submitted ? errs.assignees : ''} hint="Multiple staff can work on one job">
-          <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
-            {db.staff.filter((s) => s.status === 'Active').map((s) => {
-              const on = f.assignees.includes(s.id);
-              return (
-                <button key={s.id} type="button" className={`chip ${on ? 'is-active' : ''}`} onClick={() => setF({ ...f, assignees: on ? f.assignees.filter((x) => x !== s.id) : [...f.assignees, s.id] })}>
-                  {s.name}
-                </button>
-              );
-            })}
-          </div>
-        </Field>
 
         <Field label="Notes" htmlFor="jn">
           <textarea id="jn" className="textarea" value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} />

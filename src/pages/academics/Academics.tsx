@@ -1,17 +1,23 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BookOpen, CalendarRange, Clock, Pencil, Plus, Trash2, UserRound, Users } from 'lucide-react';
+import { BookOpen, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useApp } from '../../app/AppContext';
-import { Confirm, Drawer, Field, Menu, MoneyInput, PageHeader, Progress, Segmented, StatusDot, Switch } from '../../components/ui';
+import { Confirm, Drawer, Field, Menu, MoneyInput, PageHeader, Switch } from '../../components/ui';
 import { db, touch, useStore } from '../../data/store';
-import { date, money } from '../../lib/format';
+import { money } from '../../lib/format';
 import { enrolledIn } from '../students/Admission';
+import { formatInstituteSlot, validInstituteSlot } from '../../lib/schedule';
 
 export function Courses() {
   useStore();
   const { toast } = useApp();
   const [open, setOpen] = useState(false);
   const [del, setDel] = useState<string | null>(null);
+  const [subCourse, setSubCourse] = useState<string | null>(null);
+  const [subName, setSubName] = useState('');
+  const [slotOpen, setSlotOpen] = useState(false);
+  const [slot, setSlot] = useState({ name: '', courseId: '', start: '08:00', end: '09:00', days: 'Mon – Sat', teacher: '', capacity: 30 });
+  const slotValid = !!(slot.courseId && slot.name.trim() && validInstituteSlot(slot.start, slot.end) && slot.capacity > 0);
   const [form, setForm] = useState({ code: '', name: '', duration: 3, fee: '' as number | '', description: '' });
   const [submitted, setSubmitted] = useState(false);
   const errs = { code: !form.code.trim() ? 'Short code is required' : '', name: !form.name.trim() ? 'Course name is required' : '', fee: !form.fee ? 'Enter the course fee' : '' };
@@ -34,10 +40,11 @@ export function Courses() {
             <thead>
               <tr>
                 <th>Course</th>
+                <th>Sub-types</th>
                 <th>Duration</th>
                 <th className="ta-r">Fee</th>
                 <th className="ta-r">Students</th>
-                <th className="ta-r">Batches</th>
+                <th className="ta-r">Time slots</th>
                 <th>Active</th>
                 <th className="ta-r" />
               </tr>
@@ -61,6 +68,10 @@ export function Courses() {
                           </div>
                         </div>
                       </div>
+                    </td>
+                    <td style={{ whiteSpace: 'normal' }}>
+                      {db.courseSubtypes.filter((s) => s.courseId === c.id && s.active).map((s) => <span className="tag" key={s.id} style={{ marginRight: 4 }}>{s.name}</span>)}
+                      <button className="btn btn-ghost btn-sm" onClick={() => setSubCourse(c.id)}><Plus /> Manage</button>
                     </td>
                     <td>{c.duration} months</td>
                     <td className="ta-r num" style={{ fontWeight: 700 }}>
@@ -100,6 +111,22 @@ export function Courses() {
         </div>
       </section>
 
+      <section className="panel" style={{ marginTop: 18 }}>
+        <div className="panel__head"><div><h2>Scheduled time slots</h2><p>Students assigned by time slot; these are enrolment counts, not attendance.</p></div><button className="btn btn-primary" onClick={() => setSlotOpen(true)}><Plus /> Add time slot</button></div>
+        <div className="table-wrap"><table className="table"><thead><tr><th>Time slot</th><th>Course</th><th>Days</th><th>Faculty</th><th className="ta-r">Students assigned</th></tr></thead><tbody>{db.batches.filter((b) => b.status !== 'Completed').map((b) => <tr key={b.id}><td>{b.timing}</td><td>{db.courseById(b.courseId).name}</td><td>{b.days}</td><td>{b.teacher}</td><td className="ta-r"><Link to={`/students?batch=${b.id}`}>{enrolledIn(b.id)}</Link></td></tr>)}</tbody></table></div>
+      </section>
+
+      <Drawer open={slotOpen} onClose={() => setSlotOpen(false)} title="Add time slot" sub="Institute hours: 8:00 AM to 9:00 PM" foot={<><button className="btn btn-secondary" onClick={() => setSlotOpen(false)}>Cancel</button><button className="btn btn-primary" disabled={!slotValid} onClick={() => { if (!slotValid) return; db.batches.push({ id: `B${Date.now()}`, name: slot.name.trim(), courseId: slot.courseId, timing: formatInstituteSlot(slot.start, slot.end), days: slot.days.trim(), teacher: slot.teacher.trim(), capacity: Number(slot.capacity), start: new Date(), end: new Date(new Date().setFullYear(new Date().getFullYear() + 1)), status: 'Running' }); touch(); setSlotOpen(false); toast('success', 'Time slot added', slot.name); }}>Save time slot</button></>}>
+        <div className="form-grid"><Field label="Slot name" required htmlFor="slot-name"><input id="slot-name" className="input" value={slot.name} onChange={(e) => setSlot({ ...slot, name: e.target.value })} /></Field><Field label="Course" required htmlFor="slot-course"><select id="slot-course" className="select" value={slot.courseId} onChange={(e) => setSlot({ ...slot, courseId: e.target.value })}><option value="">Select course</option>{db.courses.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field><Field label="Start" required htmlFor="slot-start"><input id="slot-start" className="input" type="time" min="08:00" max="21:00" value={slot.start} onChange={(e) => setSlot({ ...slot, start: e.target.value })} /></Field><Field label="End" required htmlFor="slot-end"><input id="slot-end" className="input" type="time" min="08:00" max="21:00" value={slot.end} onChange={(e) => setSlot({ ...slot, end: e.target.value })} /></Field><Field label="Days" htmlFor="slot-days"><input id="slot-days" className="input" value={slot.days} onChange={(e) => setSlot({ ...slot, days: e.target.value })} /></Field><Field label="Faculty" htmlFor="slot-teacher"><input id="slot-teacher" className="input" value={slot.teacher} onChange={(e) => setSlot({ ...slot, teacher: e.target.value })} /></Field><Field label="Capacity" required htmlFor="slot-capacity"><input id="slot-capacity" className="input" type="number" min="1" value={slot.capacity} onChange={(e) => setSlot({ ...slot, capacity: Number(e.target.value) })} /></Field></div>
+      </Drawer>
+
+      <Drawer open={!!subCourse} onClose={() => setSubCourse(null)} title="Course sub-types" sub={db.courses.find((c) => c.id === subCourse)?.name ?? ''} foot={<button className="btn btn-secondary" onClick={() => setSubCourse(null)}>Done</button>}>
+        <div className="stack">
+          {db.courseSubtypes.filter((s) => s.courseId === subCourse).map((s) => <div className="row-between" key={s.id}><span>{s.name} {!s.active && <span className="muted">(inactive)</span>}</span><button className="btn btn-ghost btn-sm" onClick={() => { s.active = !s.active; touch(); }}>{s.active ? 'Deactivate' : 'Activate'}</button></div>)}
+          <Field label="New sub-type" htmlFor="sub-name"><input id="sub-name" className="input" value={subName} onChange={(e) => setSubName(e.target.value)} /></Field>
+          <button className="btn btn-primary" onClick={() => { const name = subName.trim(); if (!subCourse || !name || db.courseSubtypes.some((s) => s.courseId === subCourse && s.name.toLowerCase() === name.toLowerCase())) { toast('error', 'Enter a unique sub-type name'); return; } db.courseSubtypes.push({ id: `CS${Date.now()}`, courseId: subCourse, name, active: true }); setSubName(''); touch(); toast('success', 'Sub-type added', name); }}><Plus /> Add sub-type</button>
+        </div>
+      </Drawer>
       <Drawer
         open={open}
         onClose={() => setOpen(false)}
@@ -169,84 +196,6 @@ export function Courses() {
           setDel(null);
         }}
       />
-    </>
-  );
-}
-
-export function Batches() {
-  useStore();
-  const { toast } = useApp();
-  const [status, setStatus] = useState<'Running' | 'Upcoming' | 'Completed' | 'All'>('Running');
-  const list = db.batches.filter((b) => status === 'All' || b.status === status);
-  return (
-    <>
-      <PageHeader
-        title="Batches"
-        sub="Timings, faculty and seat capacity for every running batch."
-        crumbs={[['Academics'], ['Batches']]}
-        actions={
-          <>
-            <Segmented
-              value={status}
-              onChange={setStatus}
-              options={(['Running', 'Upcoming', 'Completed', 'All'] as const).map((v) => ({ value: v, label: `${v} ${v === 'All' ? db.batches.length : db.batches.filter((b) => b.status === v).length}` }))}
-            />
-            <button className="btn btn-primary" onClick={() => toast('info', 'Add batch', 'Opens the batch form: course, timing, faculty, capacity and dates.')}>
-              <Plus /> Add batch
-            </button>
-          </>
-        }
-      />
-      <div className="batch-grid">
-        {list.map((b) => {
-          const n = enrolledIn(b.id);
-          const p = (n / b.capacity) * 100;
-          return (
-            <article className="batch" key={b.id}>
-              <div className="batch__top">
-                <div>
-                  <h3>{b.name}</h3>
-                  <div className="muted" style={{ fontSize: 12.5 }}>
-                    {db.courseById(b.courseId).name}
-                  </div>
-                </div>
-                <StatusDot s={b.status} />
-              </div>
-              <div className="batch__facts">
-                <span>
-                  <Clock /> {b.timing}
-                </span>
-                <span>
-                  <CalendarRange /> {b.days}
-                </span>
-                <span>
-                  <UserRound /> {b.teacher}
-                </span>
-                <span>
-                  <Users /> {n} students
-                </span>
-              </div>
-              <div>
-                <div className="cap">
-                  <span>Seats filled</span>
-                  <span>
-                    <strong className="num">{n}</strong> / {b.capacity} {n >= b.capacity ? '· Full' : `· ${b.capacity - n} left`}
-                  </span>
-                </div>
-                <Progress value={p} tone={p >= 100 ? 'danger' : p >= 85 ? 'warning' : ''} />
-              </div>
-              <div className="row-between" style={{ fontSize: 12, color: 'var(--ink-3)', borderTop: '1px dashed var(--line)', paddingTop: 10 }}>
-                <span>
-                  {date(b.start)} → {date(b.end)}
-                </span>
-                <Link to={`/students?batch=${b.id}`} className="btn btn-ghost btn-sm">
-                  View students
-                </Link>
-              </div>
-            </article>
-          );
-        })}
-      </div>
     </>
   );
 }

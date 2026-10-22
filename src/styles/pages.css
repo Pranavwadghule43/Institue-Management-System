@@ -380,6 +380,29 @@ html[data-theme='dark'] .kpi--hero .kpi__value {
   margin: 16px -18px -18px;
 }
 
+.enquiry-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.enquiry-kpis button {
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.enquiry-kpis button:hover {
+  border-color: var(--primary-600);
+}
+
+.enquiry-kpis strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+}
+
 .mini-stats > div {
   padding: 14px 16px;
   border-right: 1px solid var(--line);
@@ -2194,65 +2217,6 @@ html[data-theme='dark'] .paper {
 .dayhead__facts .sep {
   margin: 0 8px;
   color: var(--ink-3);
-}
-
-.shortcuts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 16px;
-}
-
-.shortcuts a,
-.shortcuts button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 0 12px 0 6px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 500;
-  text-decoration: none;
-}
-
-.shortcuts a:hover,
-.shortcuts button:hover {
-  border-color: var(--ink-3);
-  text-decoration: none;
-}
-
-.shortcuts kbd {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  padding: 2px 5px;
-  border-radius: var(--r-sm);
-  background: var(--surface-3);
-  color: var(--ink-2);
-}
-
-.shortcuts .primary {
-  background: var(--primary-600);
-  border-color: var(--primary-600);
-  color: #fff;
-}
-
-.shortcuts .primary kbd {
-  background: rgba(255, 255, 255, 0.16);
-  color: #fff;
-}
-
-.shortcuts .primary:hover {
-  background: var(--primary-700);
-  border-color: var(--primary-700);
-}
-
-.shortcuts .push {
-  margin-left: auto;
-  padding: 0 12px;
 }
 
 .ledger {

@@ -7,7 +7,7 @@ export function waLink(phone: string, text: string) {
   return `https://wa.me/${full}?text=${encodeURIComponent(text)}`;
 }
 
-export const INSTITUTE = 'Update Computers';
+export const INSTITUTE = 'Updaate Computers';
 
 export function feeReminderText(name: string, amount: number, due: Date, balance: number) {
   return `Dear ${name},\n\nThis is a gentle reminder from ${INSTITUTE} that your fee installment of ${money(amount)} is due on ${date(due)}.\nTotal balance: ${money(balance)}.\n\nPlease visit the institute or pay via UPI. Thank you!`;

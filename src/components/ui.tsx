@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertCircle, AlertTriangle, Ban, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Clock, Home,
+  AlertCircle, Ban, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Clock, Home,
   Loader2, MoreHorizontal, PauseCircle, X,
 } from 'lucide-react';
 import { avatarColor, initials, money } from '../lib/format';
-import type { BillStatus, JobStatus, Priority } from '../data/types';
+import type { BillStatus, JobStatus } from '../data/types';
 import type { FeeState, InstState } from '../data/store';
 
 /* ------------------------------ Layout bits ------------------------------ */
@@ -113,9 +113,6 @@ export const JobStatusIcon = ({ s }: { s: JobStatus }) => <>{jobMeta[s].icon}</>
 
 export const BillStatusBadge = ({ s }: { s: BillStatus }) =>
   s === 'Paid' ? <Badge tone="success" icon={<CheckCircle2 />}>Paid</Badge> : s === 'Unpaid' ? <Badge tone="warning" icon={<Clock />}>Unpaid</Badge> : <Badge tone="danger" icon={<Ban />}>Cancelled</Badge>;
-
-export const PriorityTag = ({ p }: { p: Priority }) =>
-  p === 'Urgent' ? <Badge tone="danger" icon={<AlertTriangle />}>Urgent</Badge> : p === 'High' ? <Badge tone="accent" icon={<CircleDot />}>High</Badge> : <span className="tag">Normal</span>;
 
 export function FeeStateBadge({ s }: { s: FeeState }) {
   switch (s) {

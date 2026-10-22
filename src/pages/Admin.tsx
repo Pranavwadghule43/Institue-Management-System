@@ -5,10 +5,10 @@ import {
 } from 'lucide-react';
 import { ADMIN_ONLY, PERMISSIONS, useApp } from '../app/AppContext';
 import { Badge, Confirm, Drawer, Empty, Field, Menu, PageHeader, Pagination, Panel, Person, Segmented, StatusDot, Switch, usePaged } from '../components/ui';
-import { backupNow, db, touch, useStore } from '../data/store';
+import { db, touch, useStore } from '../data/store';
 import type { Staff as StaffT } from '../data/types';
 import { ago, dateTime } from '../lib/format';
-import { institute } from '../lib/institute';
+import { institute, saveInstituteSettings } from '../lib/institute';
 
 /* ------------------------------ Staff (UX-023) ------------------------------ */
 
@@ -159,7 +159,7 @@ export function Staff() {
 /* ------------------------------ Permissions (UX-024) ------------------------------ */
 
 export function Permissions() {
-  const { staffPerms, setStaffPerms, toast } = useApp();
+  const { staffPerms, setStaffPerms, toast, user } = useApp();
   const staffUsers = db.staff.filter((s) => s.role === 'Staff');
   const [draft, setDraft] = useState(() => Object.fromEntries(Object.entries(staffPerms).map(([k, v]) => [k, new Set(v)])));
   const changes = useMemo(() => {
@@ -179,6 +179,8 @@ export function Permissions() {
       else s.add(perm);
       return { ...d, [uid]: s };
     });
+  const selectable = PERMISSIONS.flatMap((g) => g.items.map(([key]) => key)).filter((key) => !ADMIN_ONLY.has(key));
+  const selectAll = (uid: string, checked: boolean) => setDraft((d) => ({ ...d, [uid]: new Set(checked ? selectable : []) }));
 
   return (
     <>
@@ -197,6 +199,7 @@ export function Permissions() {
                   <th key={u.id} className="user-col">
                     {u.name.split(' ')[0]}
                     <small>{u.designation}</small>
+                    <label className="check" style={{ justifyContent: 'center', marginTop: 6 }}><input type="checkbox" aria-label={`Select all permissions for ${u.name}`} disabled={u.status === 'Disabled'} checked={selectable.every((key) => draft[u.id]?.has(key))} ref={(node) => { if (node) node.indeterminate = selectable.some((key) => draft[u.id]?.has(key)) && !selectable.every((key) => draft[u.id]?.has(key)); }} onChange={(e) => selectAll(u.id, e.target.checked)} /> Select all</label>
                   </th>
                 ))}
               </tr>
@@ -250,7 +253,14 @@ export function Permissions() {
             <button
               className="btn btn-accent btn-sm"
               onClick={() => {
+                for (const member of staffUsers) {
+                  const before = staffPerms[member.id] ?? new Set<string>();
+                  const after = draft[member.id] ?? new Set<string>();
+                  const changed = selectable.filter((key) => before.has(key) !== after.has(key));
+                  if (changed.length) db.audit.unshift({ id: `PM${Date.now()}${member.id}`, at: new Date(), actor: user.id, action: 'PERMISSION_CHANGED', entity: 'Staff', entityId: member.id, summary: `${member.name}: ${changed.join(', ')}`, ip: 'demo', before: Object.fromEntries(changed.map((key) => [key, before.has(key) ? 'Allowed' : 'Denied'])), after: Object.fromEntries(changed.map((key) => [key, after.has(key) ? 'Allowed' : 'Denied'])) });
+                }
                 setStaffPerms(Object.fromEntries(Object.entries(draft).map(([k, v]) => [k, new Set(v)])));
+                touch();
                 toast('success', 'Permissions saved', `${changes} change${changes > 1 ? 's' : ''} recorded in the audit log`);
               }}
             >
@@ -386,32 +396,19 @@ export function Audit() {
 
 export function Backup() {
   useStore();
-  const { user, toast } = useApp();
-  const [busy, setBusy] = useState(false);
-  const [restore, setRestore] = useState<string | null>(null);
-  const [typed, setTyped] = useState('');
   const last = db.backups.find((b) => b.status === 'Success')!;
   return (
     <>
       <PageHeader
         title="Backup & restore"
-        sub="Daily automatic backups at 2:00 AM, weekly on Sundays, plus manual backups."
+        sub="Backup history below is sample data. Connect the FastAPI/MySQL backend to enable scheduled and manual backups."
         crumbs={[['Administration'], ['Backup']]}
         actions={
           <button
             className="btn btn-primary"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              setTimeout(() => {
-                backupNow(user.id);
-                setBusy(false);
-                toast('success', 'Backup completed', 'Encrypted and verified');
-              }, 1600);
-            }}
+            disabled
           >
-            {busy ? <span className="spinner" /> : <CloudUpload />}
-            {busy ? 'Backing up…' : 'Back up now'}
+            <CloudUpload /> Backup unavailable
           </button>
         }
       />
@@ -422,24 +419,24 @@ export function Backup() {
               <ShieldCheck />
             </span>
             <div style={{ flex: 1 }}>
-              <h2 style={{ fontSize: 18 }}>Backups are healthy</h2>
+              <h2 style={{ fontSize: 18 }}>Sample backup status</h2>
               <p className="muted" style={{ fontSize: 13.5 }}>
-                Last successful backup {ago(last.at)} · {dateTime(last.at)} · {last.size}
+                Sample entry {ago(last.at)} · {dateTime(last.at)} · {last.size}
               </p>
             </div>
           </div>
           <div className="mini-stats" style={{ marginTop: 18 }}>
             <div>
               <span>Schedule</span>
-              <strong style={{ fontSize: 14 }}>Daily 2:00 AM</strong>
+              <strong style={{ fontSize: 14 }}>Not configured</strong>
             </div>
             <div>
               <span>Retention</span>
-              <strong style={{ fontSize: 14 }}>30 daily · 12 weekly</strong>
+              <strong style={{ fontSize: 14 }}>Not configured</strong>
             </div>
             <div>
               <span>Last restore test</span>
-              <strong style={{ fontSize: 14 }}>7 days ago</strong>
+              <strong style={{ fontSize: 14 }}>Not available</strong>
             </div>
           </div>
         </Panel>
@@ -450,15 +447,14 @@ export function Backup() {
             </h2>
           </div>
           <div className="panel__body">
-            <p style={{ fontSize: 13.5, color: 'var(--ink-2)' }}>Restoring replaces all current data with the selected backup. A fresh backup is taken automatically first, and the system is verified after restore.</p>
-            <p className="muted" style={{ fontSize: 12.5, marginTop: 10 }}>Choose “Restore” on a backup in the history below.</p>
+            <p style={{ fontSize: 13.5, color: 'var(--ink-2)' }}>Restore requires a protected server operation and is unavailable in this frontend demo.</p>
           </div>
         </section>
       </div>
       <section className="panel">
         <div className="panel__head">
           <h2>
-            <Database /> Backup history
+            <Database /> Sample backup history
           </h2>
         </div>
         <div className="table-wrap">
@@ -486,10 +482,10 @@ export function Backup() {
                   <td className="ta-r">
                     {b.status === 'Success' && (
                       <div className="actions">
-                        <button className="btn btn-ghost btn-sm" onClick={() => toast('info', 'Download started', 'Encrypted backup file')}>
+                        <button className="btn btn-ghost btn-sm" disabled>
                           <Download /> Download
                         </button>
-                        <button className="btn btn-danger-soft btn-sm" onClick={() => { setRestore(b.id); setTyped(''); }}>
+                        <button className="btn btn-danger-soft btn-sm" disabled>
                           <RotateCcw /> Restore
                         </button>
                       </div>
@@ -501,24 +497,6 @@ export function Backup() {
           </table>
         </div>
       </section>
-      <Confirm
-        open={!!restore}
-        onClose={() => setRestore(null)}
-        tone="danger"
-        icon={<RotateCcw />}
-        title="Restore this backup?"
-        body={restore ? `All data will be replaced with the backup from ${dateTime(db.backups.find((b) => b.id === restore)!.at)}. Everyone will be signed out during the restore.` : ''}
-        confirmLabel="Restore backup"
-        disabled={typed !== 'RESTORE'}
-        onConfirm={() => {
-          setRestore(null);
-          toast('info', 'Restore scheduled', 'A pre-restore backup is being taken first (prototype — no data changed)');
-        }}
-      >
-        <Field label="Type RESTORE to confirm" required htmlFor="rt">
-          <input id="rt" className="input" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
-        </Field>
-      </Confirm>
     </>
   );
 }
@@ -526,8 +504,8 @@ export function Backup() {
 /* ------------------------------ Settings (UX-027) ------------------------------ */
 
 export function Settings() {
-  const { toast } = useApp();
-  const [sec, setSec] = useState<'identity' | 'numbering' | 'categories' | 'priorities'>('identity');
+  const { toast, user } = useApp();
+  const [sec, setSec] = useState<'identity' | 'numbering' | 'categories'>('identity');
   const [f, setF] = useState({ ...institute });
   const [cats, setCats] = useState([...db.expenseCategories]);
   const [newCat, setNewCat] = useState('');
@@ -546,9 +524,6 @@ export function Settings() {
             </button>
             <button className={sec === 'categories' ? 'is-active' : ''} onClick={() => setSec('categories')}>
               <Tags /> Expense categories
-            </button>
-            <button className={sec === 'priorities' ? 'is-active' : ''} onClick={() => setSec('priorities')}>
-              <ListChecks /> Job priorities
             </button>
           </nav>
         </section>
@@ -587,7 +562,7 @@ export function Settings() {
               <div className="panel__head">
                 <div>
                   <h2>Receipts & bills</h2>
-                  <p>Numbers are generated by the server and never reused</p>
+                  <p>Preview numbering for this demo session</p>
                 </div>
               </div>
               <div className="panel__body">
@@ -607,9 +582,11 @@ export function Settings() {
                   <Field label="Receipt footer note" className="span-2" htmlFor="rf">
                     <textarea id="rf" className="textarea" value={f.receiptFooter} onChange={(e) => setF({ ...f, receiptFooter: e.target.value })} />
                   </Field>
+                  <Field label="Receipt heading" className="span-2" htmlFor="rh"><input id="rh" className="input" value={f.receiptHeading} onChange={(e) => setF({ ...f, receiptHeading: e.target.value })} /></Field>
                   <Field label="Bill footer note" className="span-2" htmlFor="bf">
                     <textarea id="bf" className="textarea" value={f.billFooter} onChange={(e) => setF({ ...f, billFooter: e.target.value })} />
                   </Field>
+                  <Field label="Service bill account note" className="span-2" hint="Describe how to obtain a login ID or set a password. Never enter an actual password." htmlFor="ban"><textarea id="ban" className="textarea" value={f.billAccountNote} onChange={(e) => setF({ ...f, billAccountNote: e.target.value })} /></Field>
                 </div>
               </div>
             </>
@@ -639,27 +616,6 @@ export function Settings() {
               </div>
             </>
           )}
-          {sec === 'priorities' && (
-            <>
-              <div className="panel__head">
-                <div>
-                  <h2>Job priorities</h2>
-                  <p>Shown on service jobs and the board</p>
-                </div>
-              </div>
-              <div className="panel__body stack" style={{ gap: 10 }}>
-                {[['Urgent', 'danger', 'Deadline within 24 hours'], ['High', 'accent', 'Deadline within 3 days'], ['Normal', 'neutral', 'Standard turnaround']].map(([n, t, d]) => (
-                  <div key={n} className="row-between" style={{ padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 8 }}>
-                    <span className="row">
-                      <Badge tone={t as 'danger'}>{n}</Badge>
-                      <span className="muted" style={{ fontSize: 13 }}>{d}</span>
-                    </span>
-                    <Switch on label={`${n} enabled`} onChange={() => toast('info', 'Priority levels are required for job tracking')} />
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
           <div className="panel__foot" style={{ justifyContent: 'flex-end' }}>
             <button className="btn btn-secondary" onClick={() => { setF({ ...institute }); setCats([...db.expenseCategories]); }}>
               Reset
@@ -667,8 +623,10 @@ export function Settings() {
             <button
               className="btn btn-primary"
               onClick={() => {
-                Object.assign(institute, f);
+                saveInstituteSettings(f);
                 db.expenseCategories.splice(0, db.expenseCategories.length, ...cats);
+                db.audit.unshift({ id: `SET${Date.now()}`, at: new Date(), actor: user.id, action: 'SETTINGS_UPDATED', entity: 'Settings', entityId: 'INSTITUTE', summary: 'Institute, receipt, or expense settings saved', ip: 'demo' });
+                touch();
                 toast('success', 'Settings saved', 'Changes recorded in the audit log');
               }}
             >

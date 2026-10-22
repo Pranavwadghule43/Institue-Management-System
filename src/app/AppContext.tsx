@@ -6,7 +6,7 @@ import type { Role, Staff } from '../data/types';
 /* Permission catalog — mirrors 05_USER_ROLES_AND_PERMISSIONS. Admin has all.
    UI hiding is convenience only; the API enforces the real rule. */
 export const PERMISSIONS = [
-  { group: 'Students', items: [['students.view', 'View students'], ['students.create', 'New admission'], ['students.edit', 'Edit students'], ['students.delete', 'Delete students']] },
+  { group: 'Students', items: [['students.view', 'View students and enquiries'], ['students.create', 'Create enquiries and admissions'], ['students.edit', 'Edit students'], ['students.delete', 'Delete students']] },
   { group: 'Academics', items: [['courses.manage', 'Manage courses'], ['batches.manage', 'Manage batches']] },
   { group: 'Student Finance', items: [['fees.view', 'View fees'], ['fees.collect', 'Collect fees'], ['payments.delete_or_reverse', 'Reverse payments'], ['receipts.view_print', 'Print receipts'], ['reminders.view', 'Fee reminders']] },
   { group: 'Services', items: [['customers.view', 'View customers'], ['customers.manage', 'Manage customers'], ['service_jobs.view', 'View jobs'], ['service_jobs.create', 'Create jobs'], ['service_jobs.update', 'Update jobs'], ['service_jobs.assign', 'Assign staff'], ['service_jobs.status', 'Change job status'], ['service_documents.upload', 'Upload documents'], ['service_documents.view_sensitive', 'View sensitive documents'], ['service_documents.delete', 'Delete documents'], ['service_bill.create', 'Create service bills']] },
@@ -63,13 +63,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [signedIn, setSignedIn] = useState(read('ims.signedIn') === '1');
   const [theme, setTheme] = useState<'light' | 'dark'>((read('ims.theme') as 'light' | 'dark') || 'light');
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [staffPerms, setStaffPerms] = useState<Record<string, Set<string>>>(() => ({
-    U2: new Set(DEFAULT_STAFF_PERMS),
-    U3: new Set([...DEFAULT_STAFF_PERMS].filter((p) => !p.startsWith('fees.') && p !== 'students.create' && p !== 'students.edit')),
-    U4: new Set(['students.view', 'fees.view', 'reminders.view', 'reports.view']),
-    U5: new Set(['customers.view', 'service_jobs.view', 'service_jobs.update', 'service_jobs.status', 'service_documents.upload']),
-    U6: new Set<string>(),
-  }));
+  const [staffPerms, setStaffPerms] = useState<Record<string, Set<string>>>(() => {
+    const defaults: Record<string, Set<string>> = {
+      U2: new Set(DEFAULT_STAFF_PERMS),
+      U3: new Set([...DEFAULT_STAFF_PERMS].filter((p) => !p.startsWith('fees.') && p !== 'students.create' && p !== 'students.edit')),
+      U4: new Set(['students.view', 'fees.view', 'reminders.view', 'reports.view']),
+      U5: new Set(['customers.view', 'service_jobs.view', 'service_jobs.update', 'service_jobs.status', 'service_documents.upload']),
+      U6: new Set<string>(),
+    };
+    try {
+      const saved = JSON.parse(read('ims.staffPerms') || 'null') as Record<string, string[]> | null;
+      if (saved) for (const [uid, perms] of Object.entries(saved)) defaults[uid] = new Set(perms.filter((p) => PERMISSIONS.some((g) => g.items.some(([key]) => key === p)) && !ADMIN_ONLY.has(p)));
+    } catch { /* ignore invalid demo storage */ }
+    return defaults;
+  });
+
+  useEffect(() => {
+    write('ims.staffPerms', JSON.stringify(Object.fromEntries(Object.entries(staffPerms).map(([id, perms]) => [id, [...perms]]))));
+  }, [staffPerms]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;

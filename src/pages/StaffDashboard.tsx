@@ -1,13 +1,12 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { Check, Lock, MessageCircle } from 'lucide-react';
 import { useApp } from '../app/AppContext';
-import { JobStatusBadge, Panel, Person, PriorityTag } from '../components/ui';
+import { JobStatusBadge, Panel, Person } from '../components/ui';
 import { balanceFor, db, feeState, isToday, nextDue, overdueDays, sum, useStore } from '../data/store';
 import { ago, date, longDate, money, time } from '../lib/format';
 import { PAY_LABEL } from '../lib/payModes';
 import { feeReminderText, waLink } from '../lib/whatsapp';
 import { DueLabel } from './services/Jobs';
-import { Shortcuts } from '../components/Shortcuts';
 
 /* Staff view of the dashboard (Staff role, permission-driven — 05_USER_ROLES).
    Shows only the signed-in person's own day: what they collected, the jobs assigned
@@ -62,7 +61,6 @@ export default function StaffDashboard() {
         </div>
       </div>
 
-      <Shortcuts />
 
       <section className="ledger" aria-label="My day">
         <div className="ledger__group">
@@ -116,10 +114,10 @@ export default function StaffDashboard() {
                         <td className="id">{j.id}</td>
                         <td style={{ whiteSpace: 'normal' }}>
                           <div style={{ fontWeight: 500 }}>
-                            {db.serviceById(j.serviceIds[0]).name} {j.priority !== 'Normal' && <PriorityTag p={j.priority} />}
+                            {db.serviceById(j.serviceIds[0]).name}
                           </div>
                           <div className="muted" style={{ fontSize: 12 }}>
-                            {db.customerById(j.customerId).name} · docs {j.docs.filter((d) => d.uploaded).length}/{j.docs.length}
+                            {db.customerById(j.customerId).name}
                           </div>
                         </td>
                         <td>

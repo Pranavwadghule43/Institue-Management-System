@@ -9,7 +9,6 @@ import type { JobStatus } from '../data/types';
 import { ago, count, dateShort, longDate, money, time } from '../lib/format';
 import { waLink, feeReminderText } from '../lib/whatsapp';
 import StaffDashboard from './StaffDashboard';
-import { Shortcuts } from '../components/Shortcuts';
 
 const SERIES: Series[] = [
   { key: 'fees', name: 'Student fees', color: 'var(--series-1)' },
@@ -89,7 +88,6 @@ function AdminDashboard() {
         </Link>
       </div>
 
-      <Shortcuts />
 
       {/* Required KPIs (M02 / FR-034, FR-035) */}
       <section className="ledger" aria-label="Today at a glance">

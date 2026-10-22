@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
-  AlertCircle, Bell, Briefcase, ChevronRight, CornerDownLeft, FileText, IndianRupee, KeyRound, LogOut, Menu as MenuIcon,
-  Moon, PanelLeftClose, PanelLeftOpen, Plus, Receipt, Search, Sun, UserPlus, UserRound, Users, Wrench,
+  AlertCircle, Bell, Briefcase, ChevronRight, CornerDownLeft, FileText, KeyRound, LogOut, Menu as MenuIcon,
+  Moon, PanelLeftClose, PanelLeftOpen, Search, Sun, UserRound, Users,
 } from 'lucide-react';
 import logoReverse from '../assets/logo-reverse.png';
 import markReverse from '../assets/mark-reverse.png';
@@ -23,8 +23,7 @@ export function AppShell() {
   const [drawer, setDrawer] = useState(false);
   const [cmdk, setCmdk] = useState(false);
   const loc = useLocation();
-  const nav = useNavigate();
-  const { can, user, role } = useApp();
+  const { user, role } = useApp();
 
   useEffect(() => setDrawer(false), [loc.pathname]);
   useEffect(() => {
@@ -35,30 +34,15 @@ export function AppShell() {
     }
   }, [collapsed]);
   useEffect(() => {
-    // Counter shortcuts — same keys shown on the dashboard toolbar
-    const alt: Record<string, [string, string]> = {
-      a: ['/students/new', 'students.create'],
-      f: ['/fees/collect', 'fees.collect'],
-      j: ['/services/jobs?new=1', 'service_jobs.create'],
-      b: ['/services/bills/new', 'service_bill.create'],
-      e: ['/expenses?new=1', 'expenses.create'],
-      d: ['/', 'dashboard.view'],
-    };
     const h = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setCmdk((o) => !o);
-      } else if (e.altKey && !e.ctrlKey && !e.metaKey && alt[e.key.toLowerCase()]) {
-        const [to, perm] = alt[e.key.toLowerCase()];
-        if (perm === 'dashboard.view' || can(perm)) {
-          e.preventDefault();
-          nav(to);
-        }
       }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [can, nav]);
+  }, []);
 
   return (
     <div className={`shell ${collapsed ? 'is-collapsed' : ''} ${drawer ? 'is-drawer-open' : ''}`}>
@@ -77,10 +61,7 @@ export function AppShell() {
           <span>
             <span className="appfoot__dot" /> {user.name} · {role}
           </span>
-          <span>Last backup today 2:00 AM</span>
-          <span className="appfoot__keys">
-            <kbd>Alt A</kbd> admission <kbd>Alt F</kbd> fee <kbd>Alt J</kbd> job <kbd>Alt B</kbd> bill <kbd>Alt E</kbd> expense <kbd>Ctrl K</kbd> search
-          </span>
+          <span>Demo data · session only</span>
           <span className="appfoot__ver">IMS v1.0 · UI preview</span>
         </footer>
       </div>
@@ -103,8 +84,8 @@ function Sidebar() {
   return (
     <aside className="sidebar" aria-label="Main navigation">
       <Link to="/" className="sidebar__brand" style={{ textDecoration: 'none' }}>
-        <img className="full" src={logoReverse} alt="Update Computers" />
-        <img className="mark" src={markReverse} alt="Update Computers" />
+        <img className="full" src={logoReverse} alt="Updaate Computers" />
+        <img className="mark" src={markReverse} alt="Updaate Computers" />
       </Link>
       <div className="sidebar__scroll">
         {NAV.map((sec) => {
@@ -128,11 +109,11 @@ function Sidebar() {
         })}
       </div>
       <div className="sidebar__foot">
-        <div className="backup-chip" data-tip="Last backup: today 2:00 AM">
+        <div className="backup-chip" data-tip="Demo preview">
           <span className="dot" />
           <div>
-            Backup healthy
-            <small>Last: today, 2:00 AM</small>
+            Demo preview
+            <small>Data resets on reload</small>
           </div>
         </div>
       </div>
@@ -182,7 +163,7 @@ function NavGroup({ node, pathname, badge }: { node: NavNode; pathname: string; 
 /* ------------------------------ Topbar ------------------------------ */
 
 function Topbar({ onToggleNav, collapsed, onSearch }: { onToggleNav: () => void; collapsed: boolean; onSearch: () => void }) {
-  const { user, role, setRole, theme, toggleTheme, can, signOut, toast } = useApp();
+  const { user, role, setRole, theme, toggleTheme, signOut, toast } = useApp();
   const nav = useNavigate();
   useStore();
   const overdue = db.students.filter((s) => s.status === 'Active' && feeState(s) === 'Overdue').length;
@@ -221,41 +202,6 @@ function Topbar({ onToggleNav, collapsed, onSearch }: { onToggleNav: () => void;
             ))}
           </div>
         </div>
-
-        <Menu
-          trigger={
-            <button className="btn btn-accent hide-sm" style={{ marginLeft: 6 }}>
-              <Plus /> New
-            </button>
-          }
-        >
-          <div className="menu__label">Quick create</div>
-          {can('students.create') && (
-            <button className="menu__item" onClick={() => nav('/students/new')}>
-              <UserPlus /> New admission <span className="meta">A</span>
-            </button>
-          )}
-          {can('fees.collect') && (
-            <button className="menu__item" onClick={() => nav('/fees/collect')}>
-              <IndianRupee /> Collect fee <span className="meta">F</span>
-            </button>
-          )}
-          {can('service_jobs.create') && (
-            <button className="menu__item" onClick={() => nav('/services/jobs?new=1')}>
-              <Wrench /> New service job <span className="meta">J</span>
-            </button>
-          )}
-          {can('customers.manage') && (
-            <button className="menu__item" onClick={() => nav('/services/customers?new=1')}>
-              <UserRound /> New customer
-            </button>
-          )}
-          {can('expenses.create') && (
-            <button className="menu__item" onClick={() => nav('/expenses?new=1')}>
-              <Receipt /> Add expense <span className="meta">E</span>
-            </button>
-          )}
-        </Menu>
 
         <button className="icon-btn" onClick={toggleTheme} aria-label="Toggle dark mode" data-tip={theme === 'light' ? 'Dark mode' : 'Light mode'}>
           {theme === 'light' ? <Moon /> : <Sun />}
@@ -362,36 +308,30 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
 
   const results = useMemo<Cmd[]>(() => {
     const s = q.trim().toLowerCase();
-    const pages: Cmd[] = [
-      { group: 'Quick actions', label: 'New admission', icon: <UserPlus />, to: '/students/new', sub: 'Add a student and enrol in a batch' },
-      { group: 'Quick actions', label: 'Collect fee', icon: <IndianRupee />, to: '/fees/collect', sub: 'Record an installment and print receipt' },
-      { group: 'Quick actions', label: 'New service job', icon: <Wrench />, to: '/services/jobs?new=1', sub: 'Customer intake for a digital service' },
-      { group: 'Quick actions', label: 'Add expense', icon: <Receipt />, to: '/expenses?new=1', sub: 'Record a cash or UPI expense' },
-      { group: 'Quick actions', label: "Today's report", icon: <FileText />, to: '/finance/daily-cash', sub: 'Daily cash summary' },
-    ];
-    if (!s) return pages;
-    const st = db.students
+    if (!s) return [];
+    const st = can('students.view') ? db.students
       .filter((x) => x.name.toLowerCase().includes(s) || x.id.toLowerCase().includes(s) || x.phone.replace(/\s/g, '').includes(s.replace(/\s/g, '')) || (/^\d{4,}$/.test(s.replace(/\s/g, '')) && x.aadhaar.replace(/\s/g, '').includes(s.replace(/\s/g, ''))))
       .slice(0, 5)
-      .map<Cmd>((x) => ({ group: 'Students', label: x.name, sub: `${x.id} · ${db.courseById(x.courseId).code} · ${x.phone}`, icon: <Users />, to: `/students/${x.id}` }));
+      .map<Cmd>((x) => ({ group: 'Students', label: x.name, sub: `${x.id} · ${db.courseById(x.courseId).code} · ${x.phone}`, icon: <Users />, to: `/students/${x.id}` })) : [];
+    const eq = can('students.view') ? db.enquiries.filter((e) => `${e.id} ${e.name} ${e.phone}`.toLowerCase().includes(s)).slice(0, 5).map<Cmd>((e) => ({ group: 'Enquiries', label: e.name, sub: `${e.id} · ${e.status}`, icon: <Users />, to: `/enquiries/${e.id}` })) : [];
     const cu = can('customers.view')
       ? db.customers
           .filter((x) => x.name.toLowerCase().includes(s) || x.id.toLowerCase().includes(s) || x.mobile.replace(/\s/g, '').includes(s.replace(/\s/g, '')))
           .slice(0, 4)
           .map<Cmd>((x) => ({ group: 'Customers', label: x.name, sub: `${x.id} · ${x.mobile}`, icon: <UserRound />, to: `/services/customers/${x.id}` }))
       : [];
-    const jb = db.jobs
+    const jb = can('service_jobs.view') ? db.jobs
       .filter((j) => j.id.toLowerCase().includes(s) || db.customerById(j.customerId).name.toLowerCase().includes(s))
       .slice(0, 4)
-      .map<Cmd>((j) => ({ group: 'Service jobs', label: `${j.id} — ${db.serviceById(j.serviceIds[0]).name}`, sub: `${db.customerById(j.customerId).name} · ${j.status}`, icon: <Briefcase />, to: `/services/jobs/${j.id}` }));
-    const rc = db.payments
+      .map<Cmd>((j) => ({ group: 'Service jobs', label: `${j.id} — ${db.serviceById(j.serviceIds[0]).name}`, sub: `${db.customerById(j.customerId).name} · ${j.status}`, icon: <Briefcase />, to: `/services/jobs/${j.id}` })) : [];
+    const rc = can('receipts.view_print') ? db.payments
       .filter((p) => p.receiptNo.toLowerCase().includes(s))
       .slice(-3)
-      .map<Cmd>((p) => ({ group: 'Receipts', label: p.receiptNo, sub: db.studentById(p.studentId).name, icon: <FileText />, to: `/fees/receipts/${p.receiptNo}` }));
+      .map<Cmd>((p) => ({ group: 'Receipts', label: p.receiptNo, sub: db.studentById(p.studentId).name, icon: <FileText />, to: `/fees/receipts/${p.receiptNo}` })) : [];
     const pg = NAV.flatMap((sec) => sec.items.flatMap((n) => (n.children ? n.children.map((c) => ({ label: c.label, to: c.to, perm: c.perm ?? n.perm })) : [{ label: n.label, to: n.to!, perm: n.perm }])))
       .filter((p) => (!p.perm || can(p.perm)) && p.label.toLowerCase().includes(s))
       .map<Cmd>((p) => ({ group: 'Go to', label: p.label, icon: <ChevronRight />, to: p.to }));
-    return [...pg, ...st, ...cu, ...jb, ...rc, ...pages.filter((p) => p.label.toLowerCase().includes(s))];
+    return [...pg, ...eq, ...st, ...cu, ...jb, ...rc];
   }, [q, can]);
 
   useEffect(() => setActive(0), [q]);

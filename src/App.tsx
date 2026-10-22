@@ -6,8 +6,9 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import StudentList from './pages/students/StudentList';
 import Admission from './pages/students/Admission';
+import { EnquiryDashboard, EnquiryDetail, NewEnquiry } from './pages/students/Enquiries';
 import StudentProfile from './pages/students/StudentProfile';
-import { Batches, Courses } from './pages/academics/Academics';
+import { Courses } from './pages/academics/Academics';
 import FeeCollection from './pages/fees/FeeCollection';
 import { FeeReminders, PaymentHistory, ReceiptView } from './pages/fees/FeeFinance';
 import Jobs from './pages/services/Jobs';
@@ -48,9 +49,12 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="students" element={<Guard perm="students.view"><StudentList /></Guard>} />
             <Route path="students/new" element={<Guard perm="students.create"><Admission /></Guard>} />
+            <Route path="enquiries" element={<Guard perm="students.view"><EnquiryDashboard /></Guard>} />
+            <Route path="enquiries/new" element={<Guard perm="students.create"><NewEnquiry /></Guard>} />
+            <Route path="enquiries/:id" element={<Guard perm="students.view"><EnquiryDetail /></Guard>} />
             <Route path="students/:id" element={<Guard perm="students.view"><StudentProfile /></Guard>} />
             <Route path="academics/courses" element={<Guard perm="courses.manage"><Courses /></Guard>} />
-            <Route path="academics/batches" element={<Guard perm="batches.manage"><Batches /></Guard>} />
+            <Route path="academics/batches" element={<Navigate to="/academics/courses" replace />} />
             <Route path="fees/collect" element={<Guard perm="fees.collect"><FeeCollection /></Guard>} />
             <Route path="fees/payments" element={<Guard perm="fees.view"><PaymentHistory /></Guard>} />
             <Route path="fees/receipts" element={<Guard perm="receipts.view_print"><PaymentHistory receipts /></Guard>} />

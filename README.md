@@ -1,7 +1,7 @@
-# Update Computers — Institute Management System (UI)
+# Updaate Computers — Institute Management System (UI)
 
 React 18 + TypeScript + Vite front-end for the IMS described in `07_UI_UX_DESIGN_SPECIFICATION.md`.
-Phase 1 (UI) — all screens run on in-memory sample data so the client can click through every workflow.
+Phase 1 (UI) — screens run on in-memory sample data. New records reset on reload. This checkout does not include the FastAPI backend, MySQL database or migrations. See [IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) for the Phase 1 review changes and remaining backend work.
 
 ## Run
 
@@ -21,8 +21,8 @@ Use the **Viewing as Admin / Staff** switch in the top bar to show the client ho
 |---|---|
 | Login | `/login` |
 | Dashboard | `/` — 8 required KPIs, quick actions, income trend, service desk, fee follow-ups, activity |
-| Students | `/students`, `/students/new`, `/students/:id` |
-| Academics | `/academics/courses`, `/academics/batches` |
+| Students | `/students`, `/enquiries`, `/enquiries/new`, `/enquiries/:id`, `/students/new?enquiry=…`, `/students/:id` |
+| Academics | `/academics/courses` (includes scheduled time slots) |
 | Student finance | `/fees/collect`, `/fees/payments`, `/fees/receipts`, `/fees/receipts/:no`, `/fees/reminders` |
 | Services | `/services/jobs` (board + list), `/services/jobs/:id`, `/services/customers`, `/services/customers/:id`, `/services/bills`, `/services/bills/new`, `/services/bills/:id` (Bill desk), `/services/master` |
 | Money | `/expenses`, `/finance/daily-cash`, `/finance/pnl`, `/reports`, `/reports/:slug` (all 25 reports) |
@@ -57,10 +57,6 @@ Items on the left, the bill exactly as it prints on the right — both update to
 - **Update:** − / + quantity stepper, or the pencil to change the service, quantity and (Admin only) rate. Overridden rates are flagged and audited.
 - **Delete:** bin icon, with an Undo bar for 7 seconds.
 - Fixed-amount discount, full payment only, paid bills locked; Admin can unlock a paid bill with a reason (WF-09) or cancel it with typed confirmation (WF-10).
-
-## Keyboard shortcuts
-
-`Alt+A` admission · `Alt+F` collect fee · `Alt+J` service job · `Alt+B` service bill · `Alt+E` expense · `Alt+D` dashboard · `Ctrl+K` search (name, mobile, Aadhaar, IDs). Payment mode pickers accept `1`–`6`.
 
 ## Aligned with the specification
 

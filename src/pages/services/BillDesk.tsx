@@ -523,11 +523,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
               )}
             </div>
             <div className="paper__foot">
-              <div style={{ maxWidth: 360 }}>{institute.billFooter}</div>
-              <div className="paper__sign">
-                <i>{db.staffById(bill?.by ?? user.id).name.split(' ')[0]}</i>
-                <div>Authorised signatory</div>
-              </div>
+              <div style={{ maxWidth: 560 }}>{institute.billFooter}<br />{institute.billAccountNote}</div>
             </div>
           </article>
           {bill?.status === 'Paid' && (

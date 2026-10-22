@@ -149,7 +149,7 @@ export function ReceiptView() {
               </button>
             )}
             <button className="btn btn-secondary" onClick={() => window.print()}>
-              <FileDown /> PDF
+              <FileDown /> Save as PDF
             </button>
             <button className="btn btn-primary" onClick={() => window.print()}>
               <Printer /> Print
@@ -171,7 +171,7 @@ export function ReceiptView() {
           </div>
         </div>
         <div className="paper__title">
-          <h2>Fee Receipt</h2>
+          <h2>{institute.receiptHeading}</h2>
           <div style={{ textAlign: 'right', fontSize: 12.5 }}>
             <div className="no">No. {p.receiptNo}</div>
             <div style={{ color: '#7a8699' }}>
@@ -219,6 +219,10 @@ export function ReceiptView() {
             <div>
               <span>Received by</span>
               <strong>{db.staffById(p.by).name}</strong>
+            </div>
+            <div>
+              <span>Next payment date</span>
+              <strong>{balanceFor(s) === 0 ? 'NIL' : nextDue(s) ? date(nextDue(s)!.due) : 'Schedule needed'}</strong>
             </div>
           </div>
           <div className="paper__amount">

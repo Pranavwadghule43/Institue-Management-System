@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Camera, CheckCircle2, Info, Printer, Save, UserPlus } from 'lucide-react';
 import { useApp } from '../../app/AppContext';
 import { Avatar, Field, Modal, MoneyInput, PageHeader, Segmented } from '../../components/ui';
-import { admitStudent, db, useStore } from '../../data/store';
+import { admitStudent, db, nextStudentId, useStore } from '../../data/store';
 import type { PayMode, Payment, Student } from '../../data/types';
 import { date, money } from '../../lib/format';
 import { PayModePicker } from '../../components/PayModePicker';
+import { addMonthsClamped } from '../../lib/schedule';
 
 export const enrolledIn = (batchId: string) => db.students.filter((s) => s.batchId === batchId && s.status === 'Active').length;
 
@@ -15,12 +16,14 @@ export default function Admission() {
   useStore();
   const { user, toast } = useApp();
   const nav = useNavigate();
+  const [params] = useSearchParams();
+  const enquiry = db.enquiries.find((e) => e.id === params.get('enquiry'));
   const firstDueDefault = new Date(db.TODAY);
   firstDueDefault.setMonth(firstDueDefault.getMonth() + 1);
 
   const blank = {
-    name: '', fatherName: '', dob: '', gender: 'Male' as 'Male' | 'Female', phone: '', sameWa: true, whatsapp: '', email: '', address: '', aadhaar: '',
-    courseId: '', batchId: '', discount: 0 as number | '', initial: '' as number | '', mode: 'Cash' as PayMode, installments: 3, firstDue: firstDueDefault.toISOString().slice(0, 10),
+    name: enquiry?.name ?? '', fatherName: enquiry?.fatherName ?? '', dob: '', gender: 'Male' as 'Male' | 'Female', phone: enquiry?.phone ?? '', sameWa: true, whatsapp: '', email: enquiry?.email ?? '', address: enquiry?.address ?? '', aadhaar: enquiry?.aadhaar ?? '',
+    courseId: enquiry?.courseId ?? '', subtypeId: enquiry?.subtypeId ?? '', batchId: '', discount: 0 as number | '', initial: '' as number | '', mode: 'Cash' as PayMode, installments: 3, firstDue: firstDueDefault.toISOString().slice(0, 10),
   };
   const [f, setF] = useState(blank);
   const [submitted, setSubmitted] = useState(false);
@@ -36,7 +39,7 @@ export default function Admission() {
   const initial = Number(f.initial || 0);
   const balance = Math.max(0, net - initial);
   const per = f.installments ? Math.floor(balance / f.installments / 50) * 50 : 0;
-  const nextId = `UC-${db.TODAY.getFullYear()}-${String(db.students.length + 1).padStart(4, '0')}`;
+  const nextId = nextStudentId();
   const seats = batch ? batch.capacity - enrolledIn(batch.id) : 0;
 
   const errors = useMemo(() => {
@@ -54,6 +57,8 @@ export default function Admission() {
     if (f.aadhaar && f.aadhaar.replace(/\D/g, '').length !== 12) e.aadhaar = 'Aadhaar must be 12 digits';
     if (!f.courseId) e.courseId = 'Select a course';
     if (!f.batchId) e.batchId = 'Select a batch';
+    if (balance > 0 && (!Number.isInteger(f.installments) || f.installments < 1 || f.installments > 8)) e.installments = 'Choose 1 to 8 installments';
+    if (balance > 0 && (!f.firstDue || Number.isNaN(new Date(f.firstDue).getTime()))) e.firstDue = 'Choose a valid due date';
     if (discount > fee) e.discount = 'Discount can’t exceed the course fee';
     if (initial > net) e.initial = `Can’t exceed net fee of ${money(net)}`;
     return e;
@@ -66,8 +71,7 @@ export default function Admission() {
     for (let k = 1; k <= f.installments; k++) {
       const amt = k === f.installments ? balance - alloc : per;
       alloc += amt;
-      const d = new Date(f.firstDue);
-      d.setMonth(d.getMonth() + (k - 1));
+      const d = addMonthsClamped(new Date(f.firstDue), k - 1);
       rows.push({ no: k, due: d, amount: amt });
     }
     return rows;
@@ -82,22 +86,28 @@ export default function Admission() {
     }
     setBusy(true);
     setTimeout(() => {
-      const res = admitStudent(
-        {
-          name: f.name.trim(), fatherName: f.fatherName.trim(), gender: f.gender, dob: new Date(f.dob), phone: f.phone.replace(/\D/g, '').replace(/(\d{5})(\d{5})/, '$1 $2'),
-          email: f.email, address: f.address, aadhaar: f.aadhaar, courseId: f.courseId, batchId: f.batchId, courseFee: fee, discount,
-          initial, installments: balance > 0 ? f.installments : 0, firstDue: new Date(f.firstDue), mode: f.mode,
-        },
-        user.id,
-      );
-      setBusy(false);
-      setDone(res);
+      try {
+        const res = admitStudent(
+          {
+            name: f.name.trim(), fatherName: f.fatherName.trim(), gender: f.gender, dob: new Date(f.dob), phone: f.phone.replace(/\D/g, '').replace(/(\d{5})(\d{5})/, '$1 $2'),
+            email: f.email, address: f.address, aadhaar: f.aadhaar, courseId: f.courseId, subtypeId: f.subtypeId, enquiryId: enquiry?.id, batchId: f.batchId, courseFee: fee, discount,
+            initial, installments: balance > 0 ? f.installments : 0, firstDue: new Date(f.firstDue), mode: f.mode,
+          },
+          user.id,
+        );
+        setDone(res);
+      } catch (error) {
+        toast('error', error instanceof Error ? error.message : 'Admission could not be saved');
+      } finally {
+        setBusy(false);
+      }
     }, 900);
   };
 
   return (
     <>
-      <PageHeader title="New admission" sub="Enrol a student into a course and batch. Fields marked * are required." crumbs={[['Students', '/students'], ['New admission']]} />
+      <PageHeader title="Confirm admission" sub={enquiry ? `From enquiry ${enquiry.id}. Complete the remaining details and save admission.` : 'Open an enquiry to confirm admission.'} crumbs={[['Enquiries', '/enquiries'], ['Confirm admission']]} />
+      {!enquiry && <div className="callout warning" style={{ marginBottom: 16 }}><Info /> <span>Select an enquiry first. <Link to="/enquiries">Open enquiries</Link></span></div>}
 
       <div className="two-col wide-side">
         <div className="panel">
@@ -187,13 +197,19 @@ export default function Admission() {
               </div>
               <div className="form-grid">
                 <Field label="Course" required error={err('courseId')} htmlFor="course" hint={course ? `${course.duration} months · ${money(course.fee)} · ${course.description}` : undefined}>
-                  <select id="course" className="select" value={f.courseId} onChange={(e) => setF((x) => ({ ...x, courseId: e.target.value, batchId: '' }))}>
+                  <select id="course" className="select" value={f.courseId} onChange={(e) => setF((x) => ({ ...x, courseId: e.target.value, subtypeId: '', batchId: '' }))}>
                     <option value="">Select course…</option>
                     {db.courses.filter((c) => c.active).map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.code} — {c.name}
                       </option>
                     ))}
+                  </select>
+                </Field>
+                <Field label="Course sub-type" htmlFor="subtype">
+                  <select id="subtype" className="select" value={f.subtypeId} disabled={!f.courseId} onChange={(e) => set('subtypeId', e.target.value)}>
+                    <option value="">None</option>
+                    {db.courseSubtypes.filter((s) => s.courseId === f.courseId && s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 </Field>
                 <Field label="Batch" required error={err('batchId')} htmlFor="batch" hint={batch ? `${batch.timing} · ${batch.days} · ${batch.teacher}` : !f.courseId ? 'Choose a course first' : undefined}>
@@ -244,16 +260,16 @@ export default function Admission() {
                     <PayModePicker dense value={f.mode} onChange={(v) => set('mode', v)} />
                   </div>
                 )}
-                <Field label="Number of installments" htmlFor="inst">
+                <Field label="Number of installments" error={err('installments')} htmlFor="inst">
                   <select id="inst" className="select" value={f.installments} onChange={(e) => set('installments', Number(e.target.value))} disabled={balance === 0}>
-                    {[1, 2, 3, 4, 5, 6].map((n) => (
+                    {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
                       <option key={n} value={n}>
                         {n} {n === 1 ? 'installment' : 'installments'}
                       </option>
                     ))}
                   </select>
                 </Field>
-                <Field label="First due date" htmlFor="fd">
+                <Field label="First due date" error={err('firstDue')} htmlFor="fd">
                   <input id="fd" type="date" className="input" value={f.firstDue} onChange={(e) => set('firstDue', e.target.value)} disabled={balance === 0} />
                 </Field>
               </div>
@@ -330,9 +346,9 @@ export default function Admission() {
               )}
             </div>
             <div className="panel__foot" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-              <button className="btn btn-primary btn-lg btn-block" onClick={submit} disabled={busy}>
+              <button className="btn btn-primary btn-lg btn-block" onClick={submit} disabled={busy || !enquiry || enquiry.status === 'Converted'}>
                 {busy ? <span className="spinner" /> : <Save />}
-                {busy ? 'Saving admission…' : initial > 0 ? `Save & collect ${money(initial)}` : 'Save admission'}
+                {busy ? 'Saving admission…' : 'Save admission'}
               </button>
               <Link to="/students" className="btn btn-ghost btn-block">
                 Cancel
@@ -341,7 +357,7 @@ export default function Admission() {
           </section>
           <div className="callout info">
             <Info />
-            <span>Student ID and receipt number are generated by the server when you save.</span>
+            <span>Student ID and receipt number are generated when you save in this demo session.</span>
           </div>
         </aside>
       </div>
