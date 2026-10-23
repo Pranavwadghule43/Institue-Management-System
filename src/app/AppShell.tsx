@@ -2,14 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   AlertCircle, Bell, Briefcase, ChevronRight, CornerDownLeft, FileText, KeyRound, LogOut, Menu as MenuIcon,
-  Moon, PanelLeftClose, PanelLeftOpen, Search, Sun, UserRound, Users,
+  Moon, PanelLeftClose, PanelLeftOpen, ReceiptText, Search, Sun, UserRound, Users,
 } from 'lucide-react';
 import logoReverse from '../assets/logo-reverse.png';
 import markReverse from '../assets/mark-reverse.png';
-import { useApp } from './AppContext';
+import { errText, useApp } from './AppContext';
 import { NAV, type NavNode } from './nav';
-import { Avatar, Menu } from '../components/ui';
-import { db, feeState, useStore } from '../data/store';
+import { Avatar, Field, Menu, Modal, useDebounced } from '../components/ui';
+import { api, useQuery } from '../api/client';
+import type { AuditItem } from '../api/types';
 import { ago } from '../lib/format';
 
 export function AppShell() {
@@ -49,11 +50,7 @@ export function AppShell() {
       <Sidebar />
       <div className="scrim" onClick={() => setDrawer(false)} />
       <div className="main">
-        <Topbar
-          onToggleNav={() => setCollapsed((c) => !c)}
-          collapsed={collapsed}
-          onSearch={() => setCmdk(true)}
-        />
+        <Topbar onToggleNav={() => setCollapsed((c) => !c)} collapsed={collapsed} onSearch={() => setCmdk(true)} />
         <main className="content" key={loc.pathname}>
           <Outlet />
         </main>
@@ -61,8 +58,8 @@ export function AppShell() {
           <span>
             <span className="appfoot__dot" /> {user.name} · {role}
           </span>
-          <span>Demo data · session only</span>
-          <span className="appfoot__ver">IMS v1.0 · UI preview</span>
+          <span>Live data</span>
+          <span className="appfoot__ver">IMS v1.0</span>
         </footer>
       </div>
       {cmdk && <CommandPalette onClose={() => setCmdk(false)} />}
@@ -74,10 +71,8 @@ export function AppShell() {
 
 function Sidebar() {
   const { can } = useApp();
-  useStore();
   const loc = useLocation();
-  const reminders = db.students.filter((s) => s.status === 'Active' && ['Overdue', 'Due Today'].includes(feeState(s))).length;
-  const openJobs = db.jobs.filter((j) => j.status === 'Pending' || j.status === 'In Process').length;
+  const { data: counts } = useQuery<{ fee_reminders: number | null; open_jobs: number | null }>('/meta/sidebar');
 
   const visible = (n: NavNode) => (!n.perm || can(n.perm)) && (!n.children || n.children.some((c) => !c.perm || can(c.perm)));
 
@@ -96,7 +91,7 @@ function Sidebar() {
               <div className="nav-section__label">{sec.label}</div>
               {items.map((n) =>
                 n.children ? (
-                  <NavGroup key={n.label} node={n} pathname={loc.pathname} badge={n.badge === 'reminders' ? reminders : n.badge === 'jobs' ? openJobs : undefined} />
+                  <NavGroup key={n.label} node={n} pathname={loc.pathname} badge={n.badge === 'reminders' ? counts?.fee_reminders ?? undefined : n.badge === 'jobs' ? counts?.open_jobs ?? undefined : undefined} />
                 ) : (
                   <NavLink key={n.label} to={n.to!} end className={({ isActive }) => `nav-item ${isActive ? 'is-active' : ''}`} data-tip={n.label}>
                     <n.icon />
@@ -107,15 +102,6 @@ function Sidebar() {
             </div>
           );
         })}
-      </div>
-      <div className="sidebar__foot">
-        <div className="backup-chip" data-tip="Demo preview">
-          <span className="dot" />
-          <div>
-            Demo preview
-            <small>Data resets on reload</small>
-          </div>
-        </div>
       </div>
     </aside>
   );
@@ -162,13 +148,15 @@ function NavGroup({ node, pathname, badge }: { node: NavNode; pathname: string; 
 
 /* ------------------------------ Topbar ------------------------------ */
 
+interface Notes { overdue_fees: number | null; urgent_jobs: number | null; unpaid_bills: number | null; recent_activity: AuditItem[] }
+
 function Topbar({ onToggleNav, collapsed, onSearch }: { onToggleNav: () => void; collapsed: boolean; onSearch: () => void }) {
-  const { user, role, setRole, theme, toggleTheme, signOut, toast } = useApp();
+  const { user, role, theme, toggleTheme, signOut } = useApp();
   const nav = useNavigate();
-  useStore();
-  const overdue = db.students.filter((s) => s.status === 'Active' && feeState(s) === 'Overdue').length;
-  const urgentJobs = db.jobs.filter((j) => (j.status === 'Pending' || j.status === 'In Process') && j.lastDate < db.TODAY).length;
+  const { data: notes } = useQuery<Notes>('/meta/notifications');
+  const [pw, setPw] = useState(false);
   const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
+  const attention = (notes?.overdue_fees ?? 0) + (notes?.urgent_jobs ?? 0);
 
   return (
     <header className="topbar no-print">
@@ -185,24 +173,6 @@ function Topbar({ onToggleNav, collapsed, onSearch }: { onToggleNav: () => void;
       </button>
       <div className="topbar__spacer" />
       <div className="topbar__actions">
-        <div className="row hide-sm" style={{ gap: 4 }} title="Prototype only — preview how each role sees the system">
-          <span className="role-switch__label">Viewing as</span>
-          <div className="role-switch">
-            {(['Admin', 'Staff'] as const).map((r) => (
-              <button
-                key={r}
-                className={role === r ? 'is-active' : ''}
-                onClick={() => {
-                  setRole(r);
-                  toast('info', `Now viewing as ${r}`, r === 'Staff' ? 'Admin-only menus and actions are hidden.' : 'Full access restored.');
-                }}
-              >
-                {r}
-              </button>
-            ))}
-          </div>
-        </div>
-
         <button className="icon-btn" onClick={toggleTheme} aria-label="Toggle dark mode" data-tip={theme === 'light' ? 'Dark mode' : 'Light mode'}>
           {theme === 'light' ? <Moon /> : <Sun />}
         </button>
@@ -211,42 +181,58 @@ function Topbar({ onToggleNav, collapsed, onSearch }: { onToggleNav: () => void;
           trigger={
             <button className="icon-btn" aria-label="Notifications">
               <Bell />
-              <span className="ping" />
+              {attention > 0 && <span className="ping" />}
             </button>
           }
         >
           <div style={{ width: 320 }}>
             <div className="menu__label">Needs attention</div>
-            <button className="menu__item" onClick={() => nav('/fees/reminders?tab=Overdue')} style={{ whiteSpace: 'normal', alignItems: 'flex-start' }}>
-              <AlertCircle style={{ color: 'var(--danger-500)' }} />
-              <span>
-                <strong style={{ fontWeight: 600 }}>{overdue} students have overdue fees</strong>
-                <br />
-                <small className="muted">Send WhatsApp reminders from Fee Reminders</small>
-              </span>
-            </button>
-            <button className="menu__item" onClick={() => nav('/services/jobs')} style={{ whiteSpace: 'normal', alignItems: 'flex-start' }}>
-              <Briefcase style={{ color: 'var(--accent-500)' }} />
-              <span>
-                <strong style={{ fontWeight: 600 }}>{urgentJobs} service jobs are past their last date</strong>
-                <br />
-                <small className="muted">Review pending and in-process jobs</small>
-              </span>
-            </button>
-            <div className="menu__sep" />
-            <div className="menu__label">Recent activity</div>
-            {db.audit.slice(0, 3).map((a) => (
-              <div key={a.id} className="menu__item" style={{ whiteSpace: 'normal', alignItems: 'flex-start', cursor: 'default' }}>
-                <FileText />
+            {notes?.overdue_fees !== null && notes?.overdue_fees !== undefined && (
+              <button className="menu__item" onClick={() => nav('/fees/reminders?tab=overdue')} style={{ whiteSpace: 'normal', alignItems: 'flex-start' }}>
+                <AlertCircle style={{ color: 'var(--danger-500)' }} />
                 <span>
-                  <span style={{ fontSize: 13 }}>{a.summary}</span>
+                  <strong style={{ fontWeight: 600 }}>{notes.overdue_fees} students have overdue fees</strong>
                   <br />
-                  <small className="muted">
-                    {db.staffById(a.actor)?.name} · {ago(a.at)}
-                  </small>
+                  <small className="muted">Send WhatsApp reminders from Fee Reminders</small>
                 </span>
-              </div>
-            ))}
+              </button>
+            )}
+            {notes?.urgent_jobs !== null && notes?.urgent_jobs !== undefined && (
+              <button className="menu__item" onClick={() => nav('/services/jobs')} style={{ whiteSpace: 'normal', alignItems: 'flex-start' }}>
+                <Briefcase style={{ color: 'var(--accent-500)' }} />
+                <span>
+                  <strong style={{ fontWeight: 600 }}>{notes.urgent_jobs} service jobs are past their last date</strong>
+                  <br />
+                  <small className="muted">Review pending and in-process jobs</small>
+                </span>
+              </button>
+            )}
+            {notes?.unpaid_bills ? (
+              <button className="menu__item" onClick={() => nav('/services/bills')} style={{ whiteSpace: 'normal', alignItems: 'flex-start' }}>
+                <ReceiptText style={{ color: 'var(--warning-500)' }} />
+                <span>
+                  <strong style={{ fontWeight: 600 }}>{notes.unpaid_bills} service bills are unpaid</strong>
+                </span>
+              </button>
+            ) : null}
+            {!!notes?.recent_activity.length && (
+              <>
+                <div className="menu__sep" />
+                <div className="menu__label">Recent activity</div>
+                {notes.recent_activity.map((a, i) => (
+                  <div key={i} className="menu__item" style={{ whiteSpace: 'normal', alignItems: 'flex-start', cursor: 'default' }}>
+                    <FileText />
+                    <span>
+                      <span style={{ fontSize: 13 }}>{a.summary}</span>
+                      <br />
+                      <small className="muted">
+                        {a.by?.name ?? 'System'} · {ago(a.at)}
+                      </small>
+                    </span>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         </Menu>
 
@@ -257,28 +243,17 @@ function Topbar({ onToggleNav, collapsed, onSearch }: { onToggleNav: () => void;
               <span className="user-btn__meta">
                 <strong>{user.name}</strong>
                 <span>
-                  {role} · {user.designation}
+                  {role}
+                  {user.designation && ` · ${user.designation}`}
                 </span>
               </span>
             </button>
           }
         >
           <div className="menu__label">Signed in as {user.username}</div>
-          <button className="menu__item" onClick={() => toast('info', 'Change password', 'Opens the password change dialog in the live system.')}>
+          <button className="menu__item" onClick={() => setPw(true)}>
             <KeyRound /> Change password
           </button>
-          <div className="row show-sm-flex" style={{ padding: '6px 10px' }}>
-            <span className="muted" style={{ fontSize: 12 }}>
-              View as
-            </span>
-            <div className="role-switch">
-              {(['Admin', 'Staff'] as const).map((r) => (
-                <button key={r} className={role === r ? 'is-active' : ''} onClick={() => setRole(r)}>
-                  {r}
-                </button>
-              ))}
-            </div>
-          </div>
           <div className="menu__sep" />
           <button
             className="menu__item danger"
@@ -291,13 +266,84 @@ function Topbar({ onToggleNav, collapsed, onSearch }: { onToggleNav: () => void;
           </button>
         </Menu>
       </div>
+      <ChangePassword open={pw} onClose={() => setPw(false)} />
     </header>
+  );
+}
+
+function ChangePassword({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { toast } = useApp();
+  const [f, setF] = useState({ current: '', next: '', again: '' });
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setF({ current: '', next: '', again: '' });
+      setErr('');
+    }
+  }, [open]);
+  const save = async () => {
+    if (f.next.length < 8) return setErr('New password must be at least 8 characters.');
+    if (f.next !== f.again) return setErr('New passwords don’t match.');
+    setBusy(true);
+    try {
+      await api('/auth/change-password', { method: 'POST', body: { current_password: f.current, new_password: f.next } });
+      toast('success', 'Password changed', 'Other devices have been signed out.');
+      onClose();
+    } catch (e) {
+      setErr(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal open={open} onClose={onClose}>
+      <div className="modal__head">
+        <div className="modal__icon primary">
+          <KeyRound />
+        </div>
+        <div>
+          <h2>Change password</h2>
+          <p>At least 8 characters. Other devices will be signed out.</p>
+        </div>
+      </div>
+      <div className="modal__body stack" style={{ gap: 12 }}>
+        <Field label="Current password" htmlFor="pw0">
+          <input id="pw0" type="password" className="input" autoComplete="current-password" value={f.current} onChange={(e) => setF({ ...f, current: e.target.value })} />
+        </Field>
+        <Field label="New password" htmlFor="pw1">
+          <input id="pw1" type="password" className="input" autoComplete="new-password" value={f.next} onChange={(e) => setF({ ...f, next: e.target.value })} />
+        </Field>
+        <Field label="Repeat new password" htmlFor="pw2" error={err || undefined}>
+          <input id="pw2" type="password" className="input" autoComplete="new-password" value={f.again} onChange={(e) => setF({ ...f, again: e.target.value })} />
+        </Field>
+      </div>
+      <div className="modal__foot">
+        <button className="btn btn-secondary" onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
+        <button className="btn btn-primary" onClick={save} disabled={busy || !f.current || !f.next}>
+          {busy && <span className="spinner" />} Save password
+        </button>
+      </div>
+    </Modal>
   );
 }
 
 /* ------------------------------ Command palette ------------------------------ */
 
 interface Cmd { group: string; label: string; sub?: string; icon: JSX.Element; to: string }
+interface Hit { code: string; label: string; sub: string }
+type SearchResult = Partial<Record<'students' | 'enquiries' | 'customers' | 'service_jobs' | 'receipts' | 'service_bills', Hit[]>>;
+
+const GROUPS: [keyof SearchResult, string, JSX.Element, (code: string) => string][] = [
+  ['enquiries', 'Enquiries', <Users key="e" />, (c) => `/enquiries/${c}`],
+  ['students', 'Students', <Users key="s" />, (c) => `/students/${c}`],
+  ['customers', 'Customers', <UserRound key="c" />, (c) => `/services/customers/${c}`],
+  ['service_jobs', 'Service jobs', <Briefcase key="j" />, (c) => `/services/jobs/${c}`],
+  ['receipts', 'Receipts', <FileText key="r" />, (c) => `/fees/receipts/${c}`],
+  ['service_bills', 'Service bills', <ReceiptText key="b" />, (c) => `/services/bills/${c}`],
+];
 
 function CommandPalette({ onClose }: { onClose: () => void }) {
   const [q, setQ] = useState('');
@@ -305,34 +351,20 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
   const nav = useNavigate();
   const { can } = useApp();
   const listRef = useRef<HTMLDivElement>(null);
+  const dq = useDebounced(q.trim(), 200);
+  const { data } = useQuery<SearchResult>(dq.length >= 2 ? '/search' : null, { q: dq });
 
   const results = useMemo<Cmd[]>(() => {
     const s = q.trim().toLowerCase();
     if (!s) return [];
-    const st = can('students.view') ? db.students
-      .filter((x) => x.name.toLowerCase().includes(s) || x.id.toLowerCase().includes(s) || x.phone.replace(/\s/g, '').includes(s.replace(/\s/g, '')) || (/^\d{4,}$/.test(s.replace(/\s/g, '')) && x.aadhaar.replace(/\s/g, '').includes(s.replace(/\s/g, ''))))
-      .slice(0, 5)
-      .map<Cmd>((x) => ({ group: 'Students', label: x.name, sub: `${x.id} · ${db.courseById(x.courseId).code} · ${x.phone}`, icon: <Users />, to: `/students/${x.id}` })) : [];
-    const eq = can('students.view') ? db.enquiries.filter((e) => `${e.id} ${e.name} ${e.phone}`.toLowerCase().includes(s)).slice(0, 5).map<Cmd>((e) => ({ group: 'Enquiries', label: e.name, sub: `${e.id} · ${e.status}`, icon: <Users />, to: `/enquiries/${e.id}` })) : [];
-    const cu = can('customers.view')
-      ? db.customers
-          .filter((x) => x.name.toLowerCase().includes(s) || x.id.toLowerCase().includes(s) || x.mobile.replace(/\s/g, '').includes(s.replace(/\s/g, '')))
-          .slice(0, 4)
-          .map<Cmd>((x) => ({ group: 'Customers', label: x.name, sub: `${x.id} · ${x.mobile}`, icon: <UserRound />, to: `/services/customers/${x.id}` }))
-      : [];
-    const jb = can('service_jobs.view') ? db.jobs
-      .filter((j) => j.id.toLowerCase().includes(s) || db.customerById(j.customerId).name.toLowerCase().includes(s))
-      .slice(0, 4)
-      .map<Cmd>((j) => ({ group: 'Service jobs', label: `${j.id} — ${db.serviceById(j.serviceIds[0]).name}`, sub: `${db.customerById(j.customerId).name} · ${j.status}`, icon: <Briefcase />, to: `/services/jobs/${j.id}` })) : [];
-    const rc = can('receipts.view_print') ? db.payments
-      .filter((p) => p.receiptNo.toLowerCase().includes(s))
-      .slice(-3)
-      .map<Cmd>((p) => ({ group: 'Receipts', label: p.receiptNo, sub: db.studentById(p.studentId).name, icon: <FileText />, to: `/fees/receipts/${p.receiptNo}` })) : [];
-    const pg = NAV.flatMap((sec) => sec.items.flatMap((n) => (n.children ? n.children.map((c) => ({ label: c.label, to: c.to, perm: c.perm ?? n.perm })) : [{ label: n.label, to: n.to!, perm: n.perm }])))
+    const pages = NAV.flatMap((sec) => sec.items.flatMap((n) => (n.children ? n.children.map((c) => ({ label: c.label, to: c.to, perm: c.perm ?? n.perm })) : [{ label: n.label, to: n.to!, perm: n.perm }])))
       .filter((p) => (!p.perm || can(p.perm)) && p.label.toLowerCase().includes(s))
       .map<Cmd>((p) => ({ group: 'Go to', label: p.label, icon: <ChevronRight />, to: p.to }));
-    return [...pg, ...eq, ...st, ...cu, ...jb, ...rc];
-  }, [q, can]);
+    const hits = dq.length >= 2 && data
+      ? GROUPS.flatMap(([key, group, icon, to]) => (data[key] ?? []).map<Cmd>((h) => ({ group, label: h.label, sub: h.sub, icon, to: to(h.code) })))
+      : [];
+    return [...pages, ...hits];
+  }, [q, dq, data, can]);
 
   useEffect(() => setActive(0), [q]);
   useEffect(() => {
@@ -352,7 +384,7 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
           <Search />
           <input
             autoFocus
-            placeholder="Name, mobile, Aadhaar, Student ID, job or receipt no."
+            placeholder="Name, mobile, Student ID, Aadhaar (12 digits), job or receipt no."
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
@@ -369,7 +401,7 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
           <kbd className="kbd">Esc</kbd>
         </div>
         <div className="cmdk__list" ref={listRef}>
-          {results.length === 0 && (
+          {results.length === 0 && q.trim() && (
             <div className="empty" style={{ padding: 32 }}>
               <div className="empty__art">
                 <Search />

@@ -1,19 +1,26 @@
-# Updaate Computers — Institute Management System (UI)
+# Updaate Computers — Institute Management System
 
-React 18 + TypeScript + Vite front-end for the IMS described in `07_UI_UX_DESIGN_SPECIFICATION.md`.
-Phase 1 (UI) — screens run on in-memory sample data. New records reset on reload. This checkout does not include the FastAPI backend, MySQL database or migrations. See [IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) for the Phase 1 review changes and remaining backend work.
+React 18 + TypeScript + Vite front-end backed by the FastAPI API in [backend/](backend/README.md).
+All data comes from the server (no demo or sample data in the app). Money, totals, IDs and permissions are decided by the API.
 
 ## Run
 
 ```bash
+# 1. API (see backend/README.md for setup, seeding and the single Admin account)
+backend/.venv/Scripts/python -m uvicorn app.main:app --app-dir backend --env-file backend/.env --port 8000
+
+# 2. Web app
+cp .env.example .env   # VITE_API_URL=http://localhost:8000/api/v1
 npm install
-npm run dev          # http://localhost:5173
-npm run build        # production build → dist/
-npm run build:demo   # ONE self-contained file → dist-demo/index.html (double-click / email to client)
+npm run dev            # http://localhost:5173
+npm run build          # production build -> dist/
 ```
 
-Sign in with `admin` (Admin view) or any other username (Staff view), any password of 4+ characters.
-Use the **Viewing as Admin / Staff** switch in the top bar to show the client how permissions change the UI.
+Sign in with a real account: the one Admin (created with `python -m app.cli create-admin`) and up to 4 Staff accounts the Admin creates
+under Administration -> Staff. Each staff member sees only what the Admin grants on the Permissions page; the API enforces the same rules.
+
+Receipts and service bills print on two sides (front + back) from the institute's paper templates: fee receipt on A5 landscape,
+service bill on A5 portrait (`src/components/PrintDocs.tsx`, `src/styles/print.css`).
 
 ## Screens (UX-001 … UX-027)
 
@@ -53,10 +60,11 @@ the dialog opens automatically. Each open is written to the audit log.
 
 Items on the left, the bill exactly as it prints on the right — both update together.
 
-- **Add:** type in the search box and press Enter, or click a counter-item shortcut (B/W print, lamination…). Adding the same item again raises its quantity.
+- **Add:** type in the search box and press Enter. Adding the same item again raises its quantity.
 - **Update:** − / + quantity stepper, or the pencil to change the service, quantity and (Admin only) rate. Overridden rates are flagged and audited.
 - **Delete:** bin icon, with an Undo bar for 7 seconds.
-- Fixed-amount discount, full payment only, paid bills locked; Admin can unlock a paid bill with a reason (WF-09) or cancel it with typed confirmation (WF-10).
+- Fixed-amount discount, full payment only, paid bills locked. A correction is an Admin cancellation (reason + typed bill number) followed by a replacement bill.
+- Portal user name / password for the customer can be typed for printing; they are never sent to the server.
 
 ## Aligned with the specification
 
@@ -69,22 +77,21 @@ Items on the left, the bill exactly as it prints on the right — both update to
 ## Handoff
 
 `handoff/` holds the packages for colleagues — source code zip, Figma import zip (33 editable SVG screens + PNGs +
-design tokens) and the single-file demo. See `handoff/HANDOFF.md`.
+design tokens). See `handoff/HANDOFF.md`.
 
 ## Structure
 
 ```
 src/
-├─ app/            AppContext (role, permissions, theme, toasts), AppShell (sidebar, topbar, command palette), nav
-├─ components/     ui.tsx (Badge/Modal/Drawer/Table helpers/Field/MoneyInput…), BarChart.tsx, PayModePicker.tsx
-├─ data/           types.ts, mock.ts (sample data), store.ts (selectors + mutations — swap for API calls)
-├─ lib/            format.ts (₹ Indian grouping, dates, amount in words), whatsapp.ts (wa.me links), institute.ts, payModes.ts
+├─ api/            client.ts (fetch, auth token, useQuery, write/refresh), types.ts (API shapes)
+├─ app/            AppContext (signed-in user, permissions, theme, toasts), AppShell (sidebar, topbar, command palette), nav
+├─ components/     ui.tsx (Badge/Modal/Drawer/Table helpers/Field/MoneyInput…), BarChart.tsx, PayModePicker.tsx, PrintDocs.tsx (receipt + bill templates)
+├─ lib/            format.ts (₹ Indian grouping, dates), whatsapp.ts (wa.me links), payModes.ts, schedule.ts
 ├─ pages/          one folder/file per module
-└─ styles/         tokens.css (brand colours), base, layout, components, pages
+└─ styles/         tokens.css (brand colours), base, layout, components, pages, print (A5 templates)
 ```
 
 ## Before freezing
 
 - Brand hex values were sampled from the client palette image (`#1A58AB`, `#009EE5`, `#FD6801`, `#1F2B3B`) — confirm with the client (spec §Brand).
-- `src/lib/institute.ts` holds **placeholder** address / phone / email for receipts — replace with real details.
-- `src/data/store.ts` is the seam for the FastAPI backend: replace selectors/mutations with TanStack Query hooks.
+- Institute name, address and phone come from Settings (seeded from the receipt template).

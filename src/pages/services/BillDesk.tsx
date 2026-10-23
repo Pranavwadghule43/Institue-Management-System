@@ -1,72 +1,73 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Ban, Check, FileDown, Lock, MessageCircle, Minus, Pencil, Plus, Printer, RotateCcw, Search, Trash2, Unlock, X } from 'lucide-react';
-import logo from '../../assets/logo.png';
-import { useApp } from '../../app/AppContext';
+import { Ban, Check, FileDown, Lock, MessageCircle, Minus, Pencil, Plus, Printer, RotateCcw, Search, Trash2, X } from 'lucide-react';
+import { errText, useApp } from '../../app/AppContext';
 import { PayModePicker } from '../../components/PayModePicker';
-import { BillStatusBadge, Confirm, Field, MoneyInput, PageHeader } from '../../components/ui';
-import { cancelBill, createBill, db, payBill, touch, useStore } from '../../data/store';
-import type { Bill, BillItem, PayMode } from '../../data/types';
-import { amountInWords, date, dateTime, money } from '../../lib/format';
-import { institute } from '../../lib/institute';
+import { BillStatusBadge, Confirm, Field, LoadError, MoneyInput, PageHeader, SkeletonRows } from '../../components/ui';
+import { api, newKey, useQuery, write, type Page } from '../../api/client';
+import type { Bill, Job, PayMode, Service, Settings } from '../../api/types';
+import { money, n } from '../../lib/format';
 import { PAY_LABEL } from '../../lib/payModes';
 import { billMessage } from '../../lib/whatsapp';
 import { WhatsAppSend } from '../../components/WhatsAppSend';
+import { PrintArea, ServiceBillPrint, billPdf } from '../../components/PrintDocs';
+import { saveFile } from '../../lib/pdf';
 import NotFound from '../NotFound';
 
 /* UX-016 / UX-017 — Service Bill desk.
-   Left: line items (add · change qty · edit · delete). Right: the bill exactly as it will print.
-   Rules: rate comes from Service Master; only Admin may override it (FR-025). Fixed discount only (C-38).
-   One full payment (FR-026). Paid-bill edit and cancellation are Admin-only (FR-027). */
+   Left: line items (add · change qty · edit · delete). Right: the bill exactly as it prints (paper template).
+   The server recalculates every total; rates come from Service Master and only the Admin may override them.
+   Paid bills are locked: a correction is an Admin cancellation followed by a replacement bill. */
 
-type Line = BillItem & { key: number };
+interface Line { key: number; serviceId: number; name: string; qty: number; rate: number }
 let keySeq = 1;
-const toLines = (items: BillItem[]): Line[] => items.map((i) => ({ ...i, key: keySeq++ }));
-const QUICK = ['S16', 'S17', 'S18', 'S19', 'S13', 'S15'];
 
 export default function BillDesk() {
-  useStore();
   const { id } = useParams();
   const [params] = useSearchParams();
   const isNew = id === 'new' || !id;
-  const autoSend = params.get('send') === '1';
-  const existing = !isNew ? db.bills.find((b) => b.id === id) : undefined;
-  if (!isNew && !existing) return <NotFound what="bill" />;
-  return <Desk key={existing?.id ?? 'new'} bill={existing} initialJob={params.get('job') ?? ''} autoSend={autoSend} />;
+  const { data: bill, error } = useQuery<Bill>(isNew ? null : `/service-bills/${id}`);
+  if (error?.status === 404) return <NotFound what="bill" />;
+  if (error) return <LoadError error={error} />;
+  if (!isNew && !bill) return <SkeletonRows rows={6} cols={4} />;
+  return <Desk key={bill?.code ?? 'new'} bill={bill} initialJob={params.get('job') ?? ''} autoSend={params.get('send') === '1'} />;
 }
 
 function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string; autoSend?: boolean }) {
-  const { can, role, user, toast } = useApp();
+  const { can, role, toast } = useApp();
   const nav = useNavigate();
-  const isAdmin = role === 'Admin';
   const canRate = can('service_bill.rate_override');
+  const { data: services } = useQuery<Service[]>('/services', { active: true });
+  const { data: settings } = useQuery<Settings>('/settings');
+  const { data: billable } = useQuery<Page<Job>>(bill ? null : '/service-jobs', { billable: true, page_size: 100 });
+  const [jobCode, setJobCode] = useState(bill?.job.code ?? initialJob);
+  const job = billable?.items.find((j) => j.code === jobCode);
+  const price = (sid: number) => n(services?.find((s) => s.id === sid)?.price);
 
-  const billableJobs = db.jobs.filter((j) => !j.billId && j.status !== 'Cancelled');
-  const [jobId, setJobId] = useState(bill?.jobId ?? (billableJobs.some((j) => j.id === initialJob) ? initialJob : ''));
-  const job = jobId ? db.jobById(jobId) : undefined;
-  const customer = job ? db.customerById(job.customerId) : bill ? db.customerById(bill.customerId) : undefined;
-
-  const [lines, setLines] = useState<Line[]>(() => toLines(bill ? bill.items : job ? job.serviceIds.map((s) => ({ serviceId: s, qty: 1, rate: db.serviceById(s).price })) : []));
-  const [discount, setDiscount] = useState<number | ''>(bill?.discount ?? 0);
-  const [unlocked, setUnlocked] = useState(false);
+  const fromBill = () => (bill ? bill.items.map((i) => ({ key: keySeq++, serviceId: i.service_id ?? 0, name: i.name, qty: i.quantity, rate: n(i.rate) })) : []);
+  const [lines, setLines] = useState<Line[]>(fromBill);
+  const [discount, setDiscount] = useState<number | ''>(bill ? n(bill.discount) : 0);
   const [editing, setEditing] = useState<number | null>(null);
-  const [draft, setDraft] = useState<BillItem | null>(null);
+  const [draft, setDraft] = useState<{ serviceId: number; qty: number; rate: number } | null>(null);
   const [removed, setRemoved] = useState<{ line: Line; index: number } | null>(null);
   const [flash, setFlash] = useState<number | null>(null);
   const [mode, setMode] = useState<PayMode>('Cash');
+  const [reference, setReference] = useState('');
+  const [portal, setPortal] = useState({ user: '', pass: '' });
   const [payOpen, setPayOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [confirmNo, setConfirmNo] = useState('');
-  const [editReason, setEditReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [wa, setWa] = useState(!!autoSend && bill?.status === 'Paid');
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const payKey = useRef(newKey());
 
-  // when a job is picked for a new bill, load its services as the starting lines
+  // when a job is picked for a new bill, start from its services at current Service Master rates
   useEffect(() => {
-    if (!bill && job) setLines(toLines(job.serviceIds.map((s) => ({ serviceId: s, qty: 1, rate: db.serviceById(s).price }))));
+    if (!bill && job && services) setLines(job.services.map((s) => ({ key: keySeq++, serviceId: s.id, name: s.name, qty: s.quantity, rate: price(s.id) || n(s.rate) })));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId]);
+  }, [jobCode, !!services, !!job]);
 
   useEffect(() => {
     if (!removed) return;
@@ -75,22 +76,21 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
   }, [removed]);
 
   const status = bill?.status ?? 'Draft';
-  const editable = !bill || bill.status === 'Unpaid' || (bill.status === 'Paid' && unlocked);
+  const editable = !bill || bill.status === 'Unpaid';
   const sub = lines.reduce((t, l) => t + l.qty * l.rate, 0);
   const disc = Math.min(Number(discount || 0), sub);
   const total = Math.max(0, sub - disc);
-  const dirty = bill ? JSON.stringify(lines.map(({ key, ...i }) => i)) !== JSON.stringify(bill.items) || disc !== bill.discount : lines.length > 0;
+  const dirty = bill ? JSON.stringify(lines.map((l) => [l.serviceId, l.qty, l.rate])) !== JSON.stringify(bill.items.map((i) => [i.service_id, i.quantity, n(i.rate)])) || disc !== n(bill.discount) : lines.length > 0;
   const discountError = Number(discount || 0) > sub ? 'Discount can’t be more than the subtotal' : '';
 
   /* ---------------- item operations ---------------- */
-  const addItem = (serviceId: string, qty = 1) => {
-    const existingIdx = lines.findIndex((l) => l.serviceId === serviceId && l.rate === db.serviceById(serviceId).price);
+  const addItem = (s: Service, qty = 1) => {
+    const existingIdx = lines.findIndex((l) => l.serviceId === s.id && l.rate === n(s.price));
     if (existingIdx >= 0) {
-      const k = lines[existingIdx].key;
-      setLines((ls) => ls.map((l, i) => (i === existingIdx ? { ...l, qty: l.qty + qty } : l)));
-      setFlash(k);
+      setLines((ls) => ls.map((l, i) => (i === existingIdx ? { ...l, qty: Math.min(999, l.qty + qty) } : l)));
+      setFlash(lines[existingIdx].key);
     } else {
-      const line = { serviceId, qty, rate: db.serviceById(serviceId).price, key: keySeq++ };
+      const line = { key: keySeq++, serviceId: s.id, name: s.name, qty, rate: n(s.price) };
       setLines((ls) => [...ls, line]);
       setFlash(line.key);
     }
@@ -108,244 +108,162 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
     setLines((ls) => [...ls.slice(0, removed.index), removed.line, ...ls.slice(removed.index)]);
     setRemoved(null);
   };
-  const startEdit = (l: Line) => {
-    setEditing(l.key);
-    setDraft({ serviceId: l.serviceId, qty: l.qty, rate: l.rate });
-  };
   const saveEdit = () => {
     if (!draft || editing === null) return;
-    setLines((ls) => ls.map((l) => (l.key === editing ? { ...l, ...draft, qty: Math.max(1, draft.qty) } : l)));
+    const name = services?.find((s) => s.id === draft.serviceId)?.name ?? lines.find((l) => l.key === editing)?.name ?? '';
+    setLines((ls) => ls.map((l) => (l.key === editing ? { ...l, serviceId: draft.serviceId, name, qty: Math.max(1, draft.qty), rate: draft.rate } : l)));
     setFlash(editing);
     setTimeout(() => setFlash(null), 900);
     setEditing(null);
   };
 
-  /* ---------------- persistence ---------------- */
-  const persist = (): Bill | undefined => {
-    const items = lines.map(({ key, ...i }) => i);
-    if (!bill) {
-      if (!job) return undefined;
-      return createBill(job.id, items, disc, user.id);
-    }
-    const before = { total: money(db.billTotal(bill)), items: String(bill.items.length) };
-    bill.items = items;
-    bill.discount = disc;
-    db.audit.unshift({
-      id: `B${Date.now()}`, at: new Date(), actor: user.id, action: bill.status === 'Paid' ? 'PAID_BILL_EDITED' : 'BILL_UPDATED', entity: 'Service Bill', entityId: bill.id,
-      summary: bill.status === 'Paid' ? `Paid bill edited — ${editReason.trim()}` : `Bill ${bill.id} updated`, ip: '192.168.1.11', before, after: { total: money(total), items: String(items.length) },
-    });
-    touch();
-    return bill;
+  /* ---------------- persistence (server calculates totals) ---------------- */
+  const body = () => ({ items: lines.map((l) => ({ service_id: l.serviceId, quantity: l.qty, rate: l.rate.toFixed(2) })), discount: disc.toFixed(2) });
+  const persist = async (): Promise<Bill> => {
+    if (!bill) return write(api<Bill>('/service-bills', { method: 'POST', body: { job_code: jobCode, ...body() } }));
+    return write(api<Bill>(`/service-bills/${bill.code}`, { method: 'PATCH', body: body() }));
   };
-
-  const saveOnly = () => {
+  const saveOnly = async () => {
     if (!lines.length || discountError) return;
-    if (bill?.status === 'Paid' && editReason.trim().length < 5) {
-      toast('error', 'Reason required', 'Enter why this paid bill is being changed.');
-      return;
+    setBusy(true);
+    try {
+      const b = await persist();
+      toast('success', bill ? 'Bill updated' : `Bill ${b.code} created`, `${lines.length} item${lines.length > 1 ? 's' : ''} · ${money(b.grand_total)}`);
+      if (!bill) nav(`/services/bills/${b.code}`, { replace: true });
+    } catch (e) {
+      toast('error', errText(e));
+    } finally {
+      setBusy(false);
     }
-    const b = persist();
-    if (!b) return;
-    setUnlocked(false);
-    setEditReason('');
-    toast('success', bill ? 'Bill updated' : `Bill ${b.id} created`, `${lines.length} item${lines.length > 1 ? 's' : ''} · ${money(total)}`);
-    if (!bill) nav(`/services/bills/${b.id}`, { replace: true });
+  };
+  const pay = async () => {
+    setBusy(true);
+    try {
+      const b = dirty || !bill ? await persist() : bill;
+      const paid = await write(api<Bill>(`/service-bills/${b.code}/pay`, { method: 'POST', idempotencyKey: payKey.current, body: { payment_mode: mode, reference: reference || null } }));
+      payKey.current = newKey();
+      toast('success', 'Payment received', `${paid.code} · ${money(paid.grand_total)} · ${PAY_LABEL[mode]}`);
+      setPayOpen(false);
+      if (!bill) nav(`/services/bills/${paid.code}?send=1`, { replace: true });
+      else setWa(true);
+    } catch (e) {
+      toast('error', errText(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const shownNo = bill?.id ?? `SB-${db.TODAY.getFullYear()}-${String(db.bills.reduce((m, b) => Math.max(m, parseInt(b.id.split('-')[2], 10)), 300) + 1).padStart(4, '0')}`;
+  const customer = bill?.customer ?? job?.customer;
+  const inst = bill?.institute ?? { name: settings?.institute.name ?? null, tagline: settings?.institute.tagline ?? null, address: settings?.institute.address ?? null, phone: settings?.institute.phone ?? null };
+  const work = (bill ? bill.job.application_name : job?.application_name) || lines.map((l) => l.name).join(', ');
+  const print = useMemo(() => ({
+    billNo: bill?.code ?? 'New (number on save)', date: bill?.created_at ?? new Date().toISOString(), customerName: customer?.name ?? '', mobile: customer?.mobile ?? '',
+    work, portalUser: portal.user, portalPassword: portal.pass, items: lines.map((l) => ({ name: l.name, qty: l.qty, rate: l.rate, amount: l.qty * l.rate })),
+    subtotal: sub, discount: disc, total, inst, status: bill?.status === 'Paid' ? 'paid' as const : bill?.status === 'Cancelled' ? 'cancelled' as const : null,
+    paidNote: bill?.payment && bill.paid_at ? `Paid in full by ${bill.payment.mode_label}.` : undefined,
+  }), [bill, customer, work, portal, lines, sub, disc, total, inst]);
 
   return (
     <>
       <PageHeader
-        title={
-          <span className="row" style={{ gap: 10 }}>
-            {bill ? `Bill ${bill.id}` : 'New service bill'}
-            {bill ? <BillStatusBadge s={bill.status} /> : <span className="badge badge--neutral">Draft</span>}
-          </span>
-        }
-        sub={
-          customer ? (
-            <>
-              {customer.name} · {customer.mobile}
-              {job && (
-                <>
-                  {' · Job '}
-                  <Link to={`/services/jobs/${job.id}`}>{job.id}</Link>
-                </>
-              )}
-            </>
-          ) : (
-            'Pick the service job this bill is for.'
-          )
-        }
-        crumbs={[['Services'], ['Service bills', '/services/bills'], [bill ? bill.id : 'New bill']]}
+        title={<span className="row" style={{ gap: 10 }}>{bill ? `Bill ${bill.code}` : 'New service bill'}{bill ? <BillStatusBadge s={bill.status} /> : <span className="badge badge--neutral">Draft</span>}</span>}
+        sub={customer ? <>{customer.name} · {customer.mobile} · Job <Link to={`/services/jobs/${bill?.job.code ?? jobCode}`}>{bill?.job.code ?? jobCode}</Link></> : 'Pick the service job this bill is for.'}
+        crumbs={[['Services'], ['Service bills', '/services/bills'], [bill ? bill.code : 'New bill']]}
         actions={
           <>
-            {bill && bill.status !== 'Cancelled' && can('service_bill.cancel') && (
-              <button className="btn btn-danger-soft" onClick={() => setCancelOpen(true)}>
-                <Ban /> Cancel bill
-              </button>
-            )}
-            {bill && bill.status !== 'Cancelled' && customer && (
-              <button className="btn btn-whatsapp" onClick={() => setWa(true)}>
-                <MessageCircle /> Send bill on WhatsApp
-              </button>
-            )}
-            <button className="btn btn-secondary" onClick={() => window.print()} disabled={!lines.length}>
-              <Printer /> Print
+            {bill && bill.status !== 'Cancelled' && can('service_bill.cancel') && <button className="btn btn-danger-soft" onClick={() => { setReason(''); setConfirmNo(''); setCancelOpen(true); }}><Ban /> Cancel bill</button>}
+            {bill && bill.status !== 'Cancelled' && <button className="btn btn-whatsapp" onClick={() => setWa(true)}><MessageCircle /> Send bill on WhatsApp</button>}
+            <button className="btn btn-secondary" disabled={!lines.length || pdfBusy} onClick={async () => { setPdfBusy(true); try { saveFile(await billPdf(print)); } catch (e) { toast('error', 'PDF could not be created', errText(e)); } finally { setPdfBusy(false); } }}>
+              {pdfBusy ? <span className="spinner" /> : <FileDown />} Download PDF
             </button>
+            <button className="btn btn-secondary" onClick={() => window.print()} disabled={!lines.length}><Printer /> Print</button>
           </>
         }
       />
 
       <div className="billdesk">
-        {/* ---------------------------- Items editor ---------------------------- */}
         <section className="panel billdesk__items no-print">
           <div className="panel__head">
             <div>
               <h2>Items</h2>
-              <p>{editable ? 'Rates come from Service Master' + (canRate ? ' — you can override as Admin.' : '.') : 'Locked — this bill is ' + status.toLowerCase() + '.'}</p>
+              <p>{editable ? 'Rates come from Service Master' + (canRate ? ' — you can override as Admin.' : '.') : `Locked — this bill is ${status.toLowerCase()}.`}</p>
             </div>
-            {bill?.status === 'Paid' && isAdmin && !unlocked && (
-              <button className="btn btn-secondary btn-sm" onClick={() => setUnlocked(true)}>
-                <Unlock /> Edit paid bill
-              </button>
-            )}
           </div>
 
           {!bill && (
             <div className="billdesk__job">
-              <Field label="Service job" required htmlFor="bjob" hint={billableJobs.length ? undefined : 'Every open job already has a bill.'}>
-                <select id="bjob" className="select" value={jobId} onChange={(e) => setJobId(e.target.value)}>
+              <Field label="Service job" required htmlFor="bjob" hint={billable && !billable.items.length ? 'Every open job already has a bill.' : undefined}>
+                <select id="bjob" className="select" value={jobCode} onChange={(e) => setJobCode(e.target.value)}>
                   <option value="">Select a job without a bill…</option>
-                  {billableJobs
-                    .slice()
-                    .reverse()
-                    .map((j) => (
-                      <option key={j.id} value={j.id}>
-                        {j.id} · {db.customerById(j.customerId).name} · {db.serviceById(j.serviceIds[0]).name} ({j.status})
-                      </option>
-                    ))}
+                  {billable?.items.map((j) => <option key={j.code} value={j.code}>{j.code} · {j.customer.name} · {j.services[0]?.name} ({j.status})</option>)}
                 </select>
               </Field>
             </div>
           )}
 
-          {bill?.status === 'Paid' && unlocked && (
+          {bill?.status === 'Paid' && (
             <div className="billdesk__warn">
               <Lock size={15} />
-              <div>
-                <strong>Editing a paid bill.</strong> {money(db.billTotal(bill))} was already received. The old and new values go to the audit log.
-                <input className="input" style={{ marginTop: 8 }} placeholder="Reason for change (required)" value={editReason} onChange={(e) => setEditReason(e.target.value)} />
-              </div>
+              <div><strong>Paid bills are locked.</strong> To correct one, {role === 'Admin' ? 'cancel it with a reason and create a replacement bill.' : 'ask the Admin to cancel it and issue a replacement.'}</div>
+            </div>
+          )}
+          {bill?.status === 'Cancelled' && (
+            <div className="billdesk__warn">
+              <Ban size={15} />
+              <div><strong>Cancelled</strong>{bill.cancelled_by && ` by ${bill.cancelled_by.name}`} — {bill.cancellation_reason}. {can('service_bill.create') && <Link to={`/services/bills/new?job=${bill.job.code}`}>Create replacement bill</Link>}</div>
             </div>
           )}
 
-          {editable && (job || bill) && <AddBar onAdd={addItem} />}
+          {editable && (job || bill) && services && <AddBar services={services} onAdd={addItem} />}
 
           <div className="lines" role="table" aria-label="Bill items">
-            <div className="lines__head" role="row">
-              <span>Service</span>
-              <span className="ta-c">Qty</span>
-              <span className="ta-r">Rate</span>
-              <span className="ta-r">Amount</span>
-              <span />
-            </div>
-            {lines.length === 0 && (
-              <div className="lines__empty">
-                {job || bill ? 'No items yet. Search above or use a shortcut to add the first one.' : 'Select a job to start.'}
-              </div>
-            )}
+            <div className="lines__head" role="row"><span>Service</span><span className="ta-c">Qty</span><span className="ta-r">Rate</span><span className="ta-r">Amount</span><span /></div>
+            {lines.length === 0 && <div className="lines__empty">{job || bill ? 'No items yet. Search above to add the first one.' : 'Select a job to start.'}</div>}
             {lines.map((l, i) => {
-              const sv = db.serviceById(l.serviceId);
-              const overridden = l.rate !== sv.price;
+              const master = price(l.serviceId);
+              const overridden = !!master && l.rate !== master;
               if (editing === l.key && draft) {
                 return (
                   <div className="line is-editing" key={l.key} role="row">
                     <div className="line__edit">
-                      <select className="select" value={draft.serviceId} onChange={(e) => setDraft({ ...draft, serviceId: e.target.value, rate: canRate ? draft.rate : db.serviceById(e.target.value).price })} aria-label="Service">
-                        {db.serviceCategories.map((c) => (
-                          <optgroup key={c.id} label={c.name}>
-                            {db.services.filter((s) => s.categoryId === c.id && (s.active || s.id === draft.serviceId)).map((s) => (
-                              <option key={s.id} value={s.id}>
-                                {s.name} — {money(s.price)}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
+                      <select className="select" value={draft.serviceId} onChange={(e) => { const sid = Number(e.target.value); setDraft({ ...draft, serviceId: sid, rate: canRate ? draft.rate : price(sid) }); }} aria-label="Service">
+                        {services?.map((s) => <option key={s.id} value={s.id}>{s.name} — {money(s.price)}</option>)}
                       </select>
                       <div className="line__edit-row">
-                        <label>
-                          Qty
-                          <input className="input num" inputMode="numeric" value={draft.qty} onChange={(e) => setDraft({ ...draft, qty: Number(e.target.value.replace(/\D/g, '')) || 0 })} onKeyDown={(e) => e.key === 'Enter' && saveEdit()} autoFocus />
-                        </label>
-                        <label>
-                          Rate {!canRate && <Lock size={11} />}
-                          {canRate ? <MoneyInput value={draft.rate} onChange={(v) => setDraft({ ...draft, rate: Number(v || 0) })} /> : <input className="input num" value={money(draft.rate)} readOnly />}
-                        </label>
+                        <label>Qty <input className="input num" inputMode="numeric" value={draft.qty} onChange={(e) => setDraft({ ...draft, qty: Number(e.target.value.replace(/\D/g, '')) || 0 })} onKeyDown={(e) => e.key === 'Enter' && saveEdit()} autoFocus /></label>
+                        <label>Rate {!canRate && <Lock size={11} />}{canRate ? <MoneyInput value={draft.rate} onChange={(v) => setDraft({ ...draft, rate: Number(v || 0) })} /> : <input className="input num" value={money(draft.rate)} readOnly />}</label>
                         <span className="line__edit-amt num">{money(Math.max(1, draft.qty) * draft.rate)}</span>
                       </div>
-                      {canRate && draft.rate !== db.serviceById(draft.serviceId).price && (
-                        <span className="line__note">
-                          Overriding master rate {money(db.serviceById(draft.serviceId).price)} — will be audited.{' '}
-                          <button type="button" className="linkish" onClick={() => setDraft({ ...draft, rate: db.serviceById(draft.serviceId).price })}>
-                            Reset
-                          </button>
-                        </span>
+                      {canRate && draft.rate !== price(draft.serviceId) && (
+                        <span className="line__note">Overriding master rate {money(price(draft.serviceId))} — will be audited. <button type="button" className="linkish" onClick={() => setDraft({ ...draft, rate: price(draft.serviceId) })}>Reset</button></span>
                       )}
                     </div>
                     <div className="line__actions">
-                      <button className="icon-btn sm ok" onClick={saveEdit} aria-label="Save line">
-                        <Check />
-                      </button>
-                      <button className="icon-btn sm" onClick={() => setEditing(null)} aria-label="Cancel edit">
-                        <X />
-                      </button>
+                      <button className="icon-btn sm ok" onClick={saveEdit} aria-label="Save line"><Check /></button>
+                      <button className="icon-btn sm" onClick={() => setEditing(null)} aria-label="Cancel edit"><X /></button>
                     </div>
                   </div>
                 );
               }
               return (
                 <div className={`line ${flash === l.key ? 'is-flash' : ''}`} key={l.key} role="row">
-                  <div className="line__name">
-                    <span className="line__no">{i + 1}</span>
-                    <div>
-                      <strong>{sv.name}</strong>
-                      <small>
-                        {db.serviceCategories.find((c) => c.id === sv.categoryId)?.name}
-                        {overridden && <em> · master {money(sv.price)}</em>}
-                      </small>
-                    </div>
-                  </div>
+                  <div className="line__name"><span className="line__no">{i + 1}</span><div><strong>{l.name}</strong>{overridden && <small><em>master {money(master)}</em></small>}</div></div>
                   <div className="ta-c">
                     {editable ? (
                       <span className="stepper-qty">
-                        <button onClick={() => (l.qty === 1 ? remove(l.key) : setQty(l.key, l.qty - 1))} aria-label={l.qty === 1 ? 'Remove item' : 'Decrease quantity'}>
-                          <Minus />
-                        </button>
+                        <button onClick={() => (l.qty === 1 ? remove(l.key) : setQty(l.key, l.qty - 1))} aria-label={l.qty === 1 ? 'Remove item' : 'Decrease quantity'}><Minus /></button>
                         <input className="num" inputMode="numeric" value={l.qty} onChange={(e) => setQty(l.key, Number(e.target.value.replace(/\D/g, '')) || 1)} aria-label="Quantity" />
-                        <button onClick={() => setQty(l.key, l.qty + 1)} aria-label="Increase quantity">
-                          <Plus />
-                        </button>
+                        <button onClick={() => setQty(l.key, l.qty + 1)} aria-label="Increase quantity"><Plus /></button>
                       </span>
-                    ) : (
-                      <span className="num">{l.qty}</span>
-                    )}
+                    ) : <span className="num">{l.qty}</span>}
                   </div>
-                  <div className="ta-r num">
-                    {money(l.rate)}
-                    {overridden && <span className="override-tag">override</span>}
-                  </div>
+                  <div className="ta-r num">{money(l.rate)}{overridden && <span className="override-tag">override</span>}</div>
                   <div className="ta-r num line__amt">{money(l.qty * l.rate)}</div>
                   <div className="line__actions">
                     {editable && (
                       <>
-                        <button className="icon-btn sm" onClick={() => startEdit(l)} aria-label={`Edit ${sv.name}`} data-tip="Edit">
-                          <Pencil />
-                        </button>
-                        <button className="icon-btn sm danger" onClick={() => remove(l.key)} aria-label={`Delete ${sv.name}`} data-tip="Delete">
-                          <Trash2 />
-                        </button>
+                        <button className="icon-btn sm" onClick={() => { setEditing(l.key); setDraft({ serviceId: l.serviceId, qty: l.qty, rate: l.rate }); }} aria-label={`Edit ${l.name}`} data-tip="Edit"><Pencil /></button>
+                        <button className="icon-btn sm danger" onClick={() => remove(l.key)} aria-label={`Delete ${l.name}`} data-tip="Delete"><Trash2 /></button>
                       </>
                     )}
                   </div>
@@ -356,240 +274,66 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
 
           {removed && (
             <div className="undo-bar" role="status">
-              <span>
-                Removed <strong>{db.serviceById(removed.line.serviceId).name}</strong>
-              </span>
-              <button className="btn btn-ghost btn-sm" onClick={undo}>
-                <RotateCcw /> Undo
-              </button>
+              <span>Removed <strong>{removed.line.name}</strong></span>
+              <button className="btn btn-ghost btn-sm" onClick={undo}><RotateCcw /> Undo</button>
             </div>
           )}
 
           <div className="billdesk__totals">
-            <div className="row-between">
-              <span className="muted">Subtotal · {lines.reduce((t, l) => t + l.qty, 0)} units</span>
-              <span className="num">{money(sub)}</span>
-            </div>
+            <div className="row-between"><span className="muted">Subtotal · {lines.reduce((t, l) => t + l.qty, 0)} units</span><span className="num">{money(sub)}</span></div>
             <div className="row-between" style={{ alignItems: 'flex-start' }}>
-              <label htmlFor="disc" className="muted" style={{ paddingTop: 8 }}>
-                Discount (fixed ₹)
-              </label>
+              <label htmlFor="disc" className="muted" style={{ paddingTop: 8 }}>Discount (fixed ₹)</label>
               <div style={{ width: 150, textAlign: 'right', paddingTop: editable ? 0 : 8 }}>
                 {editable ? <MoneyInput id="disc" value={discount} onChange={setDiscount} /> : <span className="num">− {money(disc)}</span>}
                 {discountError && <span className="field__error" style={{ marginTop: 4 }}>{discountError}</span>}
               </div>
             </div>
-            <div className="row-between grand">
-              <span>Grand total</span>
-              <span className="num">{money(total)}</span>
+            <div className="row-between grand"><span>Grand total</span><span className="num">{money(total)}</span></div>
+          </div>
+
+          <div className="billdesk__job" style={{ borderTop: '1px solid var(--line)' }}>
+            <div className="form-grid">
+              <Field label="User name (printed only)" htmlFor="pu" hint="For the customer’s portal login. Not saved anywhere."><input id="pu" className="input" autoComplete="off" value={portal.user} onChange={(e) => setPortal({ ...portal, user: e.target.value })} /></Field>
+              <Field label="Password (printed only)" htmlFor="pp" hint="Typed for this print; never stored."><input id="pp" className="input" autoComplete="off" value={portal.pass} onChange={(e) => setPortal({ ...portal, pass: e.target.value })} /></Field>
             </div>
           </div>
 
           {editable && (
             <div className="billdesk__pay">
-              {(!bill || bill.status === 'Unpaid') && !unlocked ? (
-                <>
-                  <div className="field">
-                    <span className="field__label">Payment mode · full amount only</span>
-                    <PayModePicker value={mode} onChange={setMode} />
-                  </div>
-                  <div className="row" style={{ gap: 8 }}>
-                    <button className="btn btn-secondary" disabled={!dirty || !lines.length || !!discountError || (!bill && !job)} onClick={saveOnly}>
-                      {bill ? 'Save changes' : 'Save as unpaid'}
-                    </button>
-                    <button className="btn btn-accent btn-lg" style={{ flex: 1 }} disabled={!lines.length || total <= 0 || !!discountError || (!bill && !job)} onClick={() => setPayOpen(true)}>
-                      Receive {money(total)}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
-                  <button
-                    className="btn btn-ghost"
-                    onClick={() => {
-                      setUnlocked(false);
-                      setLines(toLines(bill!.items));
-                      setDiscount(bill!.discount);
-                    }}
-                  >
-                    Discard changes
-                  </button>
-                  <button className="btn btn-primary" disabled={!dirty || !lines.length || !!discountError} onClick={saveOnly}>
-                    Save paid bill
-                  </button>
-                </div>
+              <div className="field">
+                <span className="field__label">Payment mode · full amount only</span>
+                <PayModePicker value={mode} onChange={setMode} />
+              </div>
+              {mode !== 'Cash' && (
+                <Field label="Transaction reference" required={mode === 'Bank'} htmlFor="bref"><input id="bref" className="input" value={reference} onChange={(e) => setReference(e.target.value)} /></Field>
               )}
+              <div className="row" style={{ gap: 8 }}>
+                <button className="btn btn-secondary" disabled={busy || !dirty || !lines.length || !!discountError || (!bill && !job)} onClick={saveOnly}>{bill ? 'Save changes' : 'Save as unpaid'}</button>
+                <button className="btn btn-accent btn-lg" style={{ flex: 1 }} disabled={busy || !lines.length || total <= 0 || !!discountError || (!bill && !job) || (mode === 'Bank' && !reference.trim())} onClick={() => setPayOpen(true)}>Receive {money(total)}</button>
+              </div>
             </div>
           )}
         </section>
 
-        {/* ---------------------------- Live bill ---------------------------- */}
         <section className="billdesk__preview">
-          <div className="billdesk__preview-head no-print">
-            <span>Bill preview · A4</span>
-            <span className="muted">{editable ? 'updates as you edit' : status}</span>
-          </div>
-          <article className="paper paper--bill">
-            <div className="paper__band" />
-            <div className="paper__head">
-              <img src={logo} alt={institute.name} />
-              <div className="paper__inst">
-                <strong>{institute.name}</strong>
-                {institute.tagline}
-                <br />
-                {institute.address}
-                <br />
-                {institute.phone}
-              </div>
-            </div>
-            <div className="paper__title">
-              <h2>Service Bill</h2>
-              <div style={{ textAlign: 'right', fontSize: 12.5 }}>
-                <div className="no">No. {shownNo}</div>
-                <div style={{ color: '#7a8699' }}>{date(bill?.createdAt ?? new Date())}</div>
-              </div>
-            </div>
-            {bill?.status === 'Paid' && !unlocked && <div className="stamp">PAID</div>}
-            {bill?.status === 'Cancelled' && <div className="stamp cancelled">CANCELLED</div>}
-            <div className="paper__body">
-              <div className="paper__grid">
-                <div>
-                  <span>Customer</span>
-                  <strong>{customer?.name ?? '—'}</strong>
-                </div>
-                <div>
-                  <span>Customer ID</span>
-                  <strong>{customer?.id ?? '—'}</strong>
-                </div>
-                <div>
-                  <span>Mobile</span>
-                  <strong>{customer?.mobile ?? '—'}</strong>
-                </div>
-                <div>
-                  <span>Job ref.</span>
-                  <strong>{job?.id ?? bill?.jobId ?? '—'}</strong>
-                </div>
-              </div>
-              <table>
-                <thead>
-                  <tr>
-                    <th style={{ width: 30 }}>#</th>
-                    <th>Particulars</th>
-                    <th className="ta-r" style={{ width: 50 }}>Qty</th>
-                    <th className="ta-r" style={{ width: 90 }}>Rate</th>
-                    <th className="ta-r" style={{ width: 100 }}>Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lines.map((l, i) => (
-                    <tr key={l.key} className={flash === l.key ? 'is-flash' : ''}>
-                      <td>{i + 1}</td>
-                      <td>{db.serviceById(l.serviceId).name}</td>
-                      <td className="ta-r num">{l.qty}</td>
-                      <td className="ta-r num">{money(l.rate)}</td>
-                      <td className="ta-r num">{money(l.qty * l.rate)}</td>
-                    </tr>
-                  ))}
-                  {lines.length === 0 && (
-                    <tr>
-                      <td colSpan={5} style={{ color: '#9aa4b2', textAlign: 'center', padding: '28px 8px' }}>
-                        Items you add appear here
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-              <div className="paper__totals">
-                <div>
-                  <span>Subtotal</span>
-                  <span className="num">{money(sub)}</span>
-                </div>
-                {disc > 0 && (
-                  <div>
-                    <span>Discount</span>
-                    <span className="num">− {money(disc)}</span>
-                  </div>
-                )}
-                <div className="grand">
-                  <span>Grand total</span>
-                  <span className="num">{money(total)}</span>
-                </div>
-                <div style={{ fontSize: 11.5, color: '#7a8699', fontStyle: 'italic', justifyContent: 'flex-end', textAlign: 'right' }}>{amountInWords(total)}</div>
-              </div>
-              {bill?.status === 'Paid' && bill.paidAt && (
-                <p style={{ fontSize: 12.5, color: '#4a5568', marginTop: 10 }}>
-                  Paid in full by <strong>{PAY_LABEL[bill.mode!]}</strong> on {dateTime(bill.paidAt)}.
-                </p>
-              )}
-            </div>
-            <div className="paper__foot">
-              <div style={{ maxWidth: 560 }}>{institute.billFooter}<br />{institute.billAccountNote}</div>
-            </div>
-          </article>
-          {bill?.status === 'Paid' && (
-            <button className="btn btn-ghost btn-sm no-print" style={{ marginTop: 10 }} onClick={() => window.print()}>
-              <FileDown /> Save as PDF
-            </button>
-          )}
+          <div className="billdesk__preview-head no-print"><span>Bill preview · A5, both sides</span><span className="muted">{editable ? 'updates as you edit' : status}</span></div>
+          <ServiceBillPrint b={print} />
+          <PrintArea>
+            <ServiceBillPrint b={print} />
+          </PrintArea>
         </section>
       </div>
 
       {bill && customer && (
-        <WhatsAppSend
-          open={wa}
-          onClose={() => setWa(false)}
-          title={`Send bill ${bill.id}`}
-          name={customer.name}
-          phone={customer.whatsapp}
-          message={billMessage({
-            name: customer.name, billNo: bill.id, jobId: bill.jobId, at: bill.createdAt, discount: bill.discount, total: db.billTotal(bill), paid: bill.status === 'Paid', mode: bill.mode ? PAY_LABEL[bill.mode] : undefined,
-            items: bill.items.map((i) => ({ name: db.serviceById(i.serviceId).name, qty: i.qty, rate: i.rate })),
-          })}
-          onPdf={() => window.print()}
-          onOpened={() => {
-            db.audit.unshift({ id: `W${Date.now()}`, at: new Date(), actor: user.id, action: 'BILL_SHARED', entity: 'Service Bill', entityId: bill.id, summary: `Bill ${bill.id} opened in WhatsApp for ${customer.name}`, ip: '192.168.1.11' });
-            touch();
-            toast('success', 'WhatsApp opened', `Bill ready to send to ${customer.name}`);
-          }}
-        />
+        <WhatsAppSend open={wa} onClose={() => setWa(false)} title={`Send bill ${bill.code}`} name={customer.name} phone={bill.customer.whatsapp_number} message={billMessage(bill)} pdf={() => billPdf(print)}
+          onOpened={() => { api(`/service-bills/${bill.code}/share-events`, { method: 'POST', body: { event_type: 'WHATSAPP_OPENED' } }).catch(() => {}); toast('success', 'WhatsApp opened', `Bill ready to send to ${customer.name}`); }} />
       )}
 
-      <Confirm
-        open={payOpen}
-        onClose={() => setPayOpen(false)}
-        icon={<Check />}
-        title={`Receive ${money(total)} from ${customer?.name}?`}
-        body={`Full payment by ${PAY_LABEL[mode]}. The bill is locked once paid.`}
-        confirmLabel="Confirm payment"
-        busy={busy}
-        onConfirm={() => {
-          setBusy(true);
-          setTimeout(() => {
-            const b = dirty || !bill ? persist() : bill;
-            if (b) {
-              payBill(b.id, mode, user.id);
-              toast('success', 'Payment received', `${b.id} · ${money(total)} · ${PAY_LABEL[mode]}`);
-              if (!bill) nav(`/services/bills/${b.id}?send=1`, { replace: true });
-              else setWa(true);
-            }
-            setBusy(false);
-            setPayOpen(false);
-          }, 600);
-        }}
-      >
+      <Confirm open={payOpen} onClose={() => setPayOpen(false)} icon={<Check />} title={`Receive ${money(total)} from ${customer?.name}?`} body={`Full payment by ${PAY_LABEL[mode]}. The bill is locked once paid.`} confirmLabel="Confirm payment" busy={busy} onConfirm={pay}>
         <div className="summary-box">
-          <div className="kv">
-            <span>Items</span>
-            <strong>{lines.length}</strong>
-          </div>
-          <div className="kv">
-            <span>Mode</span>
-            <strong>{PAY_LABEL[mode]}</strong>
-          </div>
-          <div className="kv total">
-            <span>Amount</span>
-            <strong>{money(total)}</strong>
-          </div>
+          <div className="kv"><span>Items</span><strong>{lines.length}</strong></div>
+          <div className="kv"><span>Mode</span><strong>{PAY_LABEL[mode]}{reference && ` · ${reference}`}</strong></div>
+          <div className="kv total"><span>Amount</span><strong>{money(total)}</strong></div>
         </div>
       </Confirm>
 
@@ -599,23 +343,27 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
           onClose={() => setCancelOpen(false)}
           tone="danger"
           icon={<Ban />}
-          title={`Cancel bill ${bill.id}?`}
-          body={`${money(db.billTotal(bill))} for ${customer?.name} will be excluded from revenue and reports. The bill stays in history.${bill.status === 'Paid' ? ' Refund handling for paid bills is still to be agreed (GAP-003).' : ''}`}
+          title={`Cancel bill ${bill.code}?`}
+          body={`${money(bill.grand_total)} for ${customer?.name} will be excluded from revenue and reports. The bill stays in history.${bill.status === 'Paid' ? ' A replacement bill can’t collect money again until the refund rule is decided.' : ''}`}
           confirmLabel="Cancel bill"
-          disabled={reason.trim().length < 5 || confirmNo.trim().toUpperCase() !== bill.id.toUpperCase()}
-          onConfirm={() => {
-            cancelBill(bill.id, reason.trim(), user.id);
-            setCancelOpen(false);
-            toast('success', 'Bill cancelled', bill.id);
+          busy={busy}
+          disabled={reason.trim().length < 5 || confirmNo.trim().toUpperCase() !== bill.code.toUpperCase()}
+          onConfirm={async () => {
+            setBusy(true);
+            try {
+              await write(api(`/service-bills/${bill.code}/cancel`, { method: 'POST', body: { reason: reason.trim() } }));
+              setCancelOpen(false);
+              toast('success', 'Bill cancelled', bill.code);
+            } catch (e) {
+              toast('error', errText(e));
+            } finally {
+              setBusy(false);
+            }
           }}
         >
           <div className="stack" style={{ gap: 14 }}>
-            <Field label="Reason" required htmlFor="cr" hint="Recorded in the audit log">
-              <textarea id="cr" className="textarea" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
-            </Field>
-            <Field label={`Type ${bill.id} to confirm`} required htmlFor="cno">
-              <input id="cno" className="input id" value={confirmNo} onChange={(e) => setConfirmNo(e.target.value)} autoComplete="off" />
-            </Field>
+            <Field label="Reason" required htmlFor="cr" hint="Minimum 5 characters — recorded in the audit log"><textarea id="cr" className="textarea" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
+            <Field label={`Type ${bill.code} to confirm`} required htmlFor="cno"><input id="cno" className="input id" value={confirmNo} onChange={(e) => setConfirmNo(e.target.value)} autoComplete="off" /></Field>
           </div>
         </Confirm>
       )}
@@ -624,7 +372,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
 }
 
 /* Search-to-add bar: type, arrow to choose, Enter adds. Quantity can be set first. */
-function AddBar({ onAdd }: { onAdd: (serviceId: string, qty: number) => void }) {
+function AddBar({ services, onAdd }: { services: Service[]; onAdd: (s: Service, qty: number) => void }) {
   const [q, setQ] = useState('');
   const [qty, setQty] = useState(1);
   const [open, setOpen] = useState(false);
@@ -632,11 +380,10 @@ function AddBar({ onAdd }: { onAdd: (serviceId: string, qty: number) => void }) 
   const inputRef = useRef<HTMLInputElement>(null);
   const results = useMemo(() => {
     const s = q.trim().toLowerCase();
-    const list = db.services.filter((x) => x.active);
-    return (s ? list.filter((x) => x.name.toLowerCase().includes(s) || db.serviceCategories.find((c) => c.id === x.categoryId)!.name.toLowerCase().includes(s)) : list).slice(0, 8);
-  }, [q]);
-  const add = (sid: string) => {
-    onAdd(sid, Math.max(1, qty));
+    return (s ? services.filter((x) => x.name.toLowerCase().includes(s) || x.category.name.toLowerCase().includes(s)) : services).slice(0, 8);
+  }, [q, services]);
+  const add = (s: Service) => {
+    onAdd(s, Math.max(1, qty));
     setQ('');
     setQty(1);
     setOpen(false);
@@ -654,58 +401,28 @@ function AddBar({ onAdd }: { onAdd: (serviceId: string, qty: number) => void }) 
             value={q}
             onFocus={() => setOpen(true)}
             onBlur={() => setTimeout(() => setOpen(false), 150)}
-            onChange={(e) => {
-              setQ(e.target.value);
-              setActive(0);
-              setOpen(true);
-            }}
+            onChange={(e) => { setQ(e.target.value); setActive(0); setOpen(true); }}
             onKeyDown={(e) => {
-              if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                setActive((a) => Math.min(results.length - 1, a + 1));
-              } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                setActive((a) => Math.max(0, a - 1));
-              } else if (e.key === 'Enter' && results[active]) {
-                e.preventDefault();
-                add(results[active].id);
-              } else if (e.key === 'Escape') setOpen(false);
+              if (e.key === 'ArrowDown') { e.preventDefault(); setActive((a) => Math.min(results.length - 1, a + 1)); }
+              else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
+              else if (e.key === 'Enter' && results[active]) { e.preventDefault(); add(results[active]); }
+              else if (e.key === 'Escape') setOpen(false);
             }}
             aria-label="Search service to add"
           />
           {open && results.length > 0 && (
             <div className="combo__list">
               {results.map((s, i) => (
-                <button key={s.id} type="button" className={`combo__item ${i === active ? 'is-active' : ''}`} onMouseDown={(e) => e.preventDefault()} onMouseEnter={() => setActive(i)} onClick={() => add(s.id)}>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <strong style={{ fontWeight: 500, fontSize: 13.5 }}>{s.name}</strong>
-                    <br />
-                    <small className="muted">{db.serviceCategories.find((c) => c.id === s.categoryId)?.name}</small>
-                  </span>
+                <button key={s.id} type="button" className={`combo__item ${i === active ? 'is-active' : ''}`} onMouseDown={(e) => e.preventDefault()} onMouseEnter={() => setActive(i)} onClick={() => add(s)}>
+                  <span style={{ flex: 1, minWidth: 0 }}><strong style={{ fontWeight: 500, fontSize: 13.5 }}>{s.name}</strong><br /><small className="muted">{s.category.name}</small></span>
                   <span className="num" style={{ fontSize: 13 }}>{money(s.price)}</span>
                 </button>
               ))}
             </div>
           )}
         </div>
-        <label className="addbar__qty">
-          <span>Qty</span>
-          <input className="input num" inputMode="numeric" value={qty} onChange={(e) => setQty(Number(e.target.value.replace(/\D/g, '')) || 1)} aria-label="Quantity to add" />
-        </label>
-        <button className="btn btn-primary" disabled={!results[active] || !q.trim()} onClick={() => results[active] && add(results[active].id)}>
-          <Plus /> Add
-        </button>
-      </div>
-      <div className="addbar__quick">
-        <span>Counter items:</span>
-        {QUICK.map((sid) => {
-          const s = db.serviceById(sid);
-          return (
-            <button key={sid} type="button" className="quick-chip" onClick={() => onAdd(sid, 1)} title={`Add 1 × ${s.name}`}>
-              + {s.name.replace(' (per page)', '')} <span className="num">{money(s.price)}</span>
-            </button>
-          );
-        })}
+        <label className="addbar__qty"><span>Qty</span><input className="input num" inputMode="numeric" value={qty} onChange={(e) => setQty(Number(e.target.value.replace(/\D/g, '')) || 1)} aria-label="Quantity to add" /></label>
+        <button className="btn btn-primary" disabled={!results[active] || !q.trim()} onClick={() => results[active] && add(results[active])}><Plus /> Add</button>
       </div>
     </div>
   );

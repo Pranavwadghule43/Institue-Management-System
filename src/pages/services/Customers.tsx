@@ -1,28 +1,24 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Briefcase, MapPin, MessageCircle, Phone, Plus, Search, SearchX, UserRound, Wrench } from 'lucide-react';
-import { useApp } from '../../app/AppContext';
+import { Briefcase, MapPin, MessageCircle, Phone, Plus, Search, SearchX, UserRound, Users, Wrench } from 'lucide-react';
+import { errText, useApp } from '../../app/AppContext';
 import {
-  Avatar, BillStatusBadge, Drawer, Empty, Field, JobStatusBadge, PageHeader, Pagination, Panel, Person, SkeletonRows, Tabs, useDebounced, useLoading, usePaged,
+  Avatar, BillStatusBadge, Drawer, Empty, Field, JobStatusBadge, LoadError, PageHeader, Pagination, Panel, Person, SkeletonRows, Tabs, pager, useDebounced, usePage,
 } from '../../components/ui';
-import { addCustomer, customerBills, customerJobs, db, lastVisit, sum, useStore } from '../../data/store';
+import { api, useQuery, write, type Page } from '../../api/client';
+import type { BillStatus, Customer, JobStatus } from '../../api/types';
 import { date, money, relDays } from '../../lib/format';
 import { waLink } from '../../lib/whatsapp';
 import NotFound from '../NotFound';
 
 export function Customers() {
-  useStore();
   const { can } = useApp();
   const nav = useNavigate();
   const [params, setParams] = useSearchParams();
   const [q, setQ] = useState('');
   const dq = useDebounced(q);
-  const loading = useLoading(400);
-  const rows = useMemo(() => {
-    const s = dq.trim().toLowerCase().replace(/\s/g, '');
-    return db.customers.filter((c) => !s || c.name.toLowerCase().replace(/\s/g, '').includes(s) || c.mobile.replace(/\s/g, '').includes(s) || c.id.toLowerCase().includes(s));
-  }, [dq, db.customers.length]);
-  const pg = usePaged(rows, 12);
+  const [page, setPage] = usePage([dq]);
+  const { data, error, loading, reload } = useQuery<Page<Customer>>('/customers', { q: dq, page, page_size: 12 });
 
   return (
     <>
@@ -30,13 +26,7 @@ export function Customers() {
         title="Customers"
         sub="Service customers are kept separate from students."
         crumbs={[['Services'], ['Customers']]}
-        actions={
-          can('customers.manage') && (
-            <button className="btn btn-primary" onClick={() => setParams({ new: '1' })}>
-              <Plus /> New customer
-            </button>
-          )
-        }
+        actions={can('customers.manage') && <button className="btn btn-primary" onClick={() => setParams({ new: '1' })}><Plus /> New customer</button>}
       />
       <section className="panel">
         <div className="table-toolbar">
@@ -45,65 +35,37 @@ export function Customers() {
             <input className="input" placeholder="Name, mobile or customer ID…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search customers" />
           </div>
         </div>
-        {loading ? (
+        {error ? <LoadError error={error} retry={reload} /> : loading ? (
           <SkeletonRows rows={8} cols={5} />
-        ) : rows.length === 0 ? (
-          <Empty icon={<SearchX />} title={`No customer matches “${q}”`} body="Check the mobile number, or add them as a new customer." action={can('customers.manage') ? <button className="btn btn-primary" onClick={() => setParams({ new: '1' })}><Plus /> Add customer</button> : undefined} />
+        ) : data!.items.length === 0 ? (
+          q ? (
+            <Empty icon={<SearchX />} title={`No customer matches “${q}”`} body="Check the mobile number, or add them as a new customer." action={can('customers.manage') ? <button className="btn btn-primary" onClick={() => setParams({ new: '1' })}><Plus /> Add customer</button> : undefined} />
+          ) : (
+            <Empty icon={<Users />} title="No customers yet" body="Add a customer to create the first service job." action={can('customers.manage') ? <button className="btn btn-primary" onClick={() => setParams({ new: '1' })}><Plus /> Add customer</button> : undefined} />
+          )
         ) : (
           <>
             <div className="table-wrap responsive">
               <table className="table">
-                <thead>
-                  <tr>
-                    <th>Customer</th>
-                    <th>Mobile</th>
-                    <th>WhatsApp</th>
-                    <th>Last visit</th>
-                    <th className="ta-r">Jobs</th>
-                    <th className="ta-r">Total billed</th>
-                    <th className="ta-r" />
-                  </tr>
-                </thead>
+                <thead><tr><th>Customer</th><th>Mobile</th><th>WhatsApp</th><th>Last visit</th><th className="ta-r">Jobs</th><th className="ta-r">Total paid</th><th className="ta-r" /></tr></thead>
                 <tbody>
-                  {pg.slice.map((c) => {
-                    const jobs = customerJobs(c);
-                    const billed = sum(customerBills(c).filter((b) => b.status === 'Paid'), db.billTotal);
-                    return (
-                      <tr key={c.id} className="is-clickable" onClick={() => nav(`/services/customers/${c.id}`)}>
-                        <td>
-                          <Person name={c.name} sub={c.id} />
-                        </td>
-                        <td className="num">{c.mobile}</td>
-                        <td className="num">{c.whatsapp === c.mobile ? <span className="muted">Same</span> : c.whatsapp}</td>
-                        <td>{relDays(lastVisit(c))}</td>
-                        <td className="ta-r num">{jobs.length}</td>
-                        <td className="ta-r num" style={{ fontWeight: 600 }}>
-                          {money(billed)}
-                        </td>
-                        <td className="ta-r" onClick={(e) => e.stopPropagation()}>
-                          <Link className="btn btn-secondary btn-sm" to={`/services/jobs?new=1`}>
-                            <Wrench /> New job
-                          </Link>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {data!.items.map((c) => (
+                    <tr key={c.code} className="is-clickable" onClick={() => nav(`/services/customers/${c.code}`)}>
+                      <td><Person name={c.full_name} sub={c.code} /></td>
+                      <td className="num">{c.mobile}</td>
+                      <td className="num">{c.whatsapp_number === c.mobile ? <span className="muted">Same</span> : c.whatsapp_number}</td>
+                      <td>{c.last_visit ? relDays(c.last_visit) : '—'}</td>
+                      <td className="ta-r num">{c.total_jobs}</td>
+                      <td className="ta-r num" style={{ fontWeight: 600 }}>{money(c.total_paid)}</td>
+                      <td className="ta-r" onClick={(e) => e.stopPropagation()}>
+                        {can('service_jobs.create') && <Link className="btn btn-secondary btn-sm" to="/services/jobs?new=1"><Wrench /> New job</Link>}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
-            <div className="card-list">
-              {pg.slice.map((c) => (
-                <Link key={c.id} to={`/services/customers/${c.id}`} className="m-card">
-                  <div className="m-card__row">
-                    <Person name={c.name} sub={`${c.id} · ${c.mobile}`} />
-                    <span className="muted" style={{ fontSize: 12 }}>
-                      {customerJobs(c).length} jobs
-                    </span>
-                  </div>
-                </Link>
-              ))}
-            </div>
-            <Pagination {...pg} noun="customers" />
+            <Pagination {...pager(data, setPage)} noun="customers" />
           </>
         )}
       </section>
@@ -113,186 +75,134 @@ export function Customers() {
 }
 
 function NewCustomer({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { user, toast } = useApp();
+  const { toast } = useApp();
   const nav = useNavigate();
-  const [f, setF] = useState({ name: '', mobile: '', whatsapp: '', same: true, address: '' });
-  const [submitted, setSubmitted] = useState(false);
-  const dup = db.customers.find((c) => f.mobile.replace(/\D/g, '').length === 10 && c.mobile.replace(/\s/g, '') === f.mobile.replace(/\D/g, ''));
-  const errs = {
-    name: !f.name.trim() ? 'Name is required' : '',
-    mobile: !/^[6-9]\d{9}$/.test(f.mobile.replace(/\D/g, '')) ? 'Enter a valid 10-digit mobile number' : '',
+  const blank = { full_name: '', mobile: '', whatsapp_number: '', same: true, address: '' };
+  const [f, setF] = useState(blank);
+  const [errs, setErrs] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const digits = f.mobile.replace(/\D/g, '');
+  const { data: dup } = useQuery<Page<Customer>>(open && digits.length === 10 ? '/customers' : null, { q: digits, page_size: 1 });
+  const existing = dup?.items.find((c) => c.mobile === digits);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const c = await write(api<Customer>('/customers', { method: 'POST', body: { full_name: f.full_name, mobile: f.mobile, whatsapp_number: f.same ? null : f.whatsapp_number, address: f.address } }));
+      toast('success', 'Customer added', `${c.full_name} · ${c.code}`);
+      setF(blank);
+      setErrs({});
+      onClose();
+      nav(`/services/customers/${c.code}`);
+    } catch (e) {
+      setErrs((e as { fields?: Record<string, string> }).fields ?? {});
+      toast('error', errText(e));
+    } finally {
+      setBusy(false);
+    }
   };
   return (
-    <Drawer
-      open={open}
-      onClose={onClose}
-      title="New customer"
-      sub="For digital service requests"
-      foot={
-        <>
-          <button className="btn btn-secondary" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              setSubmitted(true);
-              if (errs.name || errs.mobile) return;
-              const m = f.mobile.replace(/\D/g, '').replace(/(\d{5})(\d{5})/, '$1 $2');
-              const c = addCustomer({ name: f.name.trim(), mobile: m, whatsapp: f.same ? m : f.whatsapp, address: f.address }, user.id);
-              toast('success', 'Customer added', `${c.name} · ${c.id}`);
-              setF({ name: '', mobile: '', whatsapp: '', same: true, address: '' });
-              setSubmitted(false);
-              onClose();
-              nav(`/services/customers/${c.id}`);
-            }}
-          >
-            Save customer
-          </button>
-        </>
-      }
-    >
+    <Drawer open={open} onClose={onClose} title="New customer" sub="For digital service requests"
+      foot={<><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={busy} onClick={save}>{busy && <span className="spinner" />}Save customer</button></>}>
       <div className="form-grid">
-        <Field label="Full name" required className="span-2" error={submitted ? errs.name : ''} htmlFor="cn">
-          <input id="cn" className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+        <Field label="Full name" required className="span-2" error={errs.full_name} htmlFor="cn"><input id="cn" className="input" value={f.full_name} onChange={(e) => setF({ ...f, full_name: e.target.value })} /></Field>
+        <Field label="Mobile" required error={errs.mobile} htmlFor="cm"><input id="cm" className="input num" inputMode="numeric" value={f.mobile} onChange={(e) => setF({ ...f, mobile: e.target.value.replace(/[^\d ]/g, '') })} /></Field>
+        <Field label="WhatsApp" error={errs.whatsapp_number} htmlFor="cw">
+          <input id="cw" className="input num" disabled={f.same} value={f.same ? f.mobile : f.whatsapp_number} onChange={(e) => setF({ ...f, whatsapp_number: e.target.value })} />
+          <label className="check"><input type="checkbox" checked={f.same} onChange={(e) => setF({ ...f, same: e.target.checked })} /> Same as mobile</label>
         </Field>
-        <Field label="Mobile" required error={submitted ? errs.mobile : ''} htmlFor="cm">
-          <input id="cm" className="input num" inputMode="numeric" value={f.mobile} onChange={(e) => setF({ ...f, mobile: e.target.value.replace(/[^\d ]/g, '') })} />
-        </Field>
-        <Field label="WhatsApp" htmlFor="cw">
-          <input id="cw" className="input num" disabled={f.same} value={f.same ? f.mobile : f.whatsapp} onChange={(e) => setF({ ...f, whatsapp: e.target.value })} />
-          <label className="check">
-            <input type="checkbox" checked={f.same} onChange={(e) => setF({ ...f, same: e.target.checked })} /> Same as mobile
-          </label>
-        </Field>
-        {dup && (
+        {existing && (
           <div className="callout warning span-2">
             <UserRound />
-            <span>
-              <strong>{dup.name}</strong> already uses this number.{' '}
-              <Link to={`/services/customers/${dup.id}`} onClick={onClose}>
-                Open existing customer
-              </Link>
-            </span>
+            <span><strong>{existing.full_name}</strong> already uses this number. <Link to={`/services/customers/${existing.code}`} onClick={onClose}>Open existing customer</Link></span>
           </div>
         )}
-        <Field label="Address" className="span-2" htmlFor="ca">
-          <textarea id="ca" className="textarea" value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} />
-        </Field>
+        <Field label="Address" className="span-2" htmlFor="ca"><textarea id="ca" className="textarea" value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} /></Field>
       </div>
     </Drawer>
   );
 }
 
+interface History {
+  jobs: { code: string; services: string[]; application_name: string | null; service_date: string; due_date: string | null; status: JobStatus }[];
+  bills: { code: string; job_code: string; created_at: string; grand_total: string; status: BillStatus }[];
+  total_paid: string; unpaid: string;
+}
+
 export function CustomerProfile() {
-  useStore();
   const { id } = useParams();
+  const { can } = useApp();
   const [tab, setTab] = useState<'jobs' | 'bills'>('jobs');
-  const c = db.customers.find((x) => x.id === id);
-  if (!c) return <NotFound what="customer" />;
-  const jobs = [...customerJobs(c)].reverse();
-  const bills = [...customerBills(c)].reverse();
-  const paid = sum(bills.filter((b) => b.status === 'Paid'), db.billTotal);
-  const due = sum(bills.filter((b) => b.status === 'Unpaid'), db.billTotal);
+  const { data: c, error, loading } = useQuery<Customer>(`/customers/${id}`);
+  const { data: h } = useQuery<History>(`/customers/${id}/history`);
+  if (error?.status === 404) return <NotFound what="customer" />;
+  if (error) return <LoadError error={error} />;
+  if (loading || !c) return <SkeletonRows rows={5} cols={4} />;
 
   return (
     <>
-      <PageHeader title="Customer profile" crumbs={[['Services'], ['Customers', '/services/customers'], [c.name]]} />
+      <PageHeader title="Customer profile" crumbs={[['Services'], ['Customers', '/services/customers'], [c.full_name]]} />
       <section className="panel" style={{ marginBottom: 18 }}>
         <div className="profile-head">
-          <Avatar name={c.name} size="xl" />
+          <Avatar name={c.full_name} size="xl" />
           <div className="profile-head__meta">
-            <h1>{c.name}</h1>
+            <h1>{c.full_name}</h1>
             <div className="profile-head__facts">
-              <span className="id">{c.id}</span>
-              <span>
-                <Phone /> {c.mobile}
-              </span>
-              <span>
-                <MapPin /> {c.address}
-              </span>
-              <span>Customer since {date(c.createdAt)}</span>
+              <span className="id">{c.code}</span>
+              <span><Phone /> {c.mobile}</span>
+              {c.address && <span><MapPin /> {c.address}</span>}
+              <span>Customer since {date(c.created_at)}</span>
             </div>
           </div>
           <div className="row">
-            <a className="btn btn-whatsapp" href={waLink(c.whatsapp, `Namaste ${c.name}, `)} target="_blank" rel="noreferrer">
-              <MessageCircle /> WhatsApp
-            </a>
-            <Link className="btn btn-primary" to="/services/jobs?new=1">
-              <Plus /> New job
-            </Link>
+            <a className="btn btn-whatsapp" href={waLink(c.whatsapp_number, `Namaste ${c.full_name}, `)} target="_blank" rel="noreferrer"><MessageCircle /> WhatsApp</a>
+            {can('service_jobs.create') && <Link className="btn btn-primary" to="/services/jobs?new=1"><Plus /> New job</Link>}
           </div>
         </div>
         <div className="fee-hero">
-          <div>
-            <span>Total jobs</span>
-            <strong>{jobs.length}</strong>
-          </div>
-          <div>
-            <span>Last visit</span>
-            <strong style={{ fontSize: 16 }}>{date(lastVisit(c))}</strong>
-          </div>
-          <div>
-            <span>Total paid</span>
-            <strong style={{ color: 'var(--success-700)' }}>{money(paid)}</strong>
-          </div>
-          <div>
-            <span>Unpaid</span>
-            <strong style={{ color: due ? 'var(--danger-700)' : undefined }}>{money(due)}</strong>
-          </div>
+          <div><span>Total jobs</span><strong>{c.total_jobs}</strong></div>
+          <div><span>Last visit</span><strong style={{ fontSize: 16 }}>{c.last_visit ? date(c.last_visit) : '—'}</strong></div>
+          <div><span>Total paid</span><strong style={{ color: 'var(--success-700)' }}>{money(c.total_paid)}</strong></div>
+          <div><span>Unpaid</span><strong style={{ color: Number(c.unpaid) ? 'var(--danger-700)' : undefined }}>{money(c.unpaid)}</strong></div>
         </div>
       </section>
       <Panel flush>
         <div style={{ padding: '0 8px' }}>
-          <Tabs value={tab} onChange={setTab} tabs={[{ value: 'jobs', label: 'Service history', count: jobs.length }, { value: 'bills', label: 'Bills', count: bills.length }]} />
+          <Tabs value={tab} onChange={setTab} tabs={[{ value: 'jobs', label: 'Service history', count: h?.jobs.length }, { value: 'bills', label: 'Bills', count: h?.bills.length }]} />
         </div>
-        {tab === 'jobs' ? (
-          jobs.length ? (
+        {!h ? <SkeletonRows rows={3} cols={4} /> : tab === 'jobs' ? (
+          h.jobs.length ? (
             <div className="table-wrap">
               <table className="table">
                 <tbody>
-                  {jobs.map((j) => (
-                    <tr key={j.id}>
-                      <td className="id">
-                        <Link to={`/services/jobs/${j.id}`}>{j.id}</Link>
-                      </td>
-                      <td style={{ fontWeight: 600 }}>{j.serviceIds.map((s) => db.serviceById(s).name).join(', ')}</td>
-                      <td>{date(j.serviceDate)}</td>
-                      <td>
-                        <JobStatusBadge s={j.status} />
-                      </td>
+                  {h.jobs.map((j) => (
+                    <tr key={j.code}>
+                      <td className="id"><Link to={`/services/jobs/${j.code}`}>{j.code}</Link></td>
+                      <td style={{ fontWeight: 600 }}>{j.services.join(', ')}</td>
+                      <td>{date(j.service_date)}</td>
+                      <td><JobStatusBadge s={j.status} /></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          ) : (
-            <Empty icon={<Briefcase />} title="No service jobs yet" body="Create the first job for this customer." />
-          )
-        ) : bills.length ? (
+          ) : <Empty icon={<Briefcase />} title="No service jobs yet" body="Create the first job for this customer." />
+        ) : h.bills.length ? (
           <div className="table-wrap">
             <table className="table">
               <tbody>
-                {bills.map((b) => (
-                  <tr key={b.id}>
-                    <td className="id">
-                      <Link to={`/services/bills/${b.id}`}>{b.id}</Link>
-                    </td>
-                    <td>{date(b.createdAt)}</td>
-                    <td className="ta-r num" style={{ fontWeight: 700 }}>
-                      {money(db.billTotal(b))}
-                    </td>
-                    <td>
-                      <BillStatusBadge s={b.status} />
-                    </td>
+                {h.bills.map((b) => (
+                  <tr key={b.code}>
+                    <td className="id"><Link to={`/services/bills/${b.code}`}>{b.code}</Link></td>
+                    <td>{date(b.created_at)}</td>
+                    <td className="ta-r num" style={{ fontWeight: 700 }}>{money(b.grand_total)}</td>
+                    <td><BillStatusBadge s={b.status} /></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        ) : (
-          <Empty icon={<Briefcase />} title="No bills yet" />
-        )}
+        ) : <Empty icon={<Briefcase />} title="No bills yet" />}
       </Panel>
     </>
   );

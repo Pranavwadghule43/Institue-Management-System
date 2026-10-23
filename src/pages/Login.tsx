@@ -2,15 +2,13 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, Eye, EyeOff } from 'lucide-react';
 import logo from '../assets/logo.png';
-import { useApp } from '../app/AppContext';
+import { errText, useApp } from '../app/AppContext';
+import { ApiError } from '../api/client';
 import { Field } from '../components/ui';
-import { institute } from '../lib/institute';
+import { INSTITUTE } from '../lib/whatsapp';
 
-const MAX_ATTEMPTS = 5;
-const LOCK_SECONDS = 60;
-
-/* UX-001 — Staff sign-in. Errors never reveal whether an account exists (M01);
-   repeated failures are throttled (FR-003); disabled/locked accounts get a generic message. */
+/* UX-001 — Staff sign-in. The server checks the password, throttles repeated failures (FR-003)
+   and never reveals whether an account exists (M01). */
 export default function Login() {
   const { signIn } = useApp();
   const nav = useNavigate();
@@ -20,7 +18,6 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [touched, setTouched] = useState(false);
-  const [fails, setFails] = useState(0);
   const [lockedFor, setLockedFor] = useState(0);
 
   useEffect(() => {
@@ -29,30 +26,21 @@ export default function Login() {
     return () => clearTimeout(t);
   }, [lockedFor]);
 
-  const fail = (msg: string) => {
-    const n = fails + 1;
-    setFails(n);
-    if (n >= MAX_ATTEMPTS) {
-      setLockedFor(LOCK_SECONDS);
-      setFails(0);
-      setError('Too many attempts. Sign-in is paused for a minute.');
-    } else setError(msg);
-  };
-
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setTouched(true);
-    if (lockedFor > 0 || !username.trim() || !password) return;
+    if (busy || lockedFor > 0 || !username.trim() || !password) return;
     setError('');
     setBusy(true);
-    setTimeout(() => {
-      setBusy(false);
-      const u = username.trim().toLowerCase();
-      if (u === 'sunil.y' || u === 'kavita.j') return fail('This account can’t sign in right now. Please contact the administrator.');
-      if (password.length < 4) return fail('Incorrect username or password.');
-      signIn(u === 'admin' ? 'Admin' : 'Staff');
+    try {
+      await signIn(username.trim(), password);
       nav('/');
-    }, 600);
+    } catch (err) {
+      setError(errText(err));
+      if (err instanceof ApiError && err.status === 429) setLockedFor(60);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const today = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -62,7 +50,7 @@ export default function Login() {
       <div className="signin__band" aria-hidden />
       <main className="signin__main">
         <form className="signin__card" onSubmit={submit} noValidate>
-          <img className="signin__logo" src={logo} alt={institute.name} />
+          <img className="signin__logo" src={logo} alt={INSTITUTE} />
           <div className="signin__heading">
             <h1>Staff sign-in</h1>
             <span>{today}</span>
@@ -97,15 +85,9 @@ export default function Login() {
           </div>
           <p className="signin__help">Forgot your password? The administrator can reset it from Staff settings.</p>
         </form>
-
-        <p className="signin__demo">
-          Demo build — sign in as <code>admin</code> for the Admin view, or any other name for Staff (password: any 4+ characters).
-        </p>
       </main>
       <footer className="signin__foot">
-        <span>
-          {institute.name} · {institute.address}
-        </span>
+        <span>{INSTITUTE}</span>
         <span>Sessions end after 30 minutes of inactivity</span>
       </footer>
     </div>

@@ -5,8 +5,7 @@ import {
   Loader2, MoreHorizontal, PauseCircle, X,
 } from 'lucide-react';
 import { avatarColor, initials, money } from '../lib/format';
-import type { BillStatus, JobStatus } from '../data/types';
-import type { FeeState, InstState } from '../data/store';
+import type { BillStatus, FeeState, InstState, JobStatus } from '../api/types';
 
 /* ------------------------------ Layout bits ------------------------------ */
 
@@ -58,7 +57,7 @@ export function Panel({ title, sub, icon, actions, children, flush, className = 
 
 /* ------------------------------ Data display ------------------------------ */
 
-export const Money = ({ v, className = '' }: { v: number; className?: string }) => <span className={`money ${className}`}>{money(v)}</span>;
+export const Money = ({ v, className = '' }: { v: number | string; className?: string }) => <span className={`money ${className}`}>{money(v)}</span>;
 
 export function Avatar({ name, size = '' }: { name: string; size?: '' | 'sm' | 'lg' | 'xl' }) {
   return (
@@ -425,16 +424,34 @@ export function SkeletonRows({ rows = 6, cols = 5 }: { rows?: number; cols?: num
   );
 }
 
-/** Simulated network latency so loading states are visible in the prototype */
-export function useLoading(ms = 450, deps: unknown[] = []) {
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    setLoading(true);
-    const t = setTimeout(() => setLoading(false), ms);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-  return loading;
+/** Page number for a server-paginated list; resets to 1 when any filter in `deps` changes. */
+export function usePage(deps: unknown[]) {
+  const [page, setPage] = useState(1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => setPage(1), deps);
+  return [page, setPage] as const;
+}
+
+/** Props for <Pagination> from a server page. */
+export const pager = (d: { page: number; pages: number; total: number; page_size: number } | undefined, setPage: (n: number) => void) =>
+  ({ page: d?.page ?? 1, pages: Math.max(1, d?.pages ?? 1), setPage, total: d?.total ?? 0, size: d?.page_size ?? 25 });
+
+/** Inline error state for a failed query. */
+export function LoadError({ error, retry }: { error: Error; retry?: () => void }) {
+  return (
+    <div className="empty">
+      <div className="empty__art">
+        <AlertCircle />
+      </div>
+      <h3>Couldn’t load this</h3>
+      <p>{error.message}</p>
+      {retry && (
+        <button className="btn btn-secondary" onClick={retry}>
+          Try again
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function useDebounced<T>(v: T, ms = 220) {

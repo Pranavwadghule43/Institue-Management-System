@@ -13,12 +13,25 @@ cp .env.example .env            # fill DATABASE_URL, AADHAAR_* keys
 .venv/Scripts/python -m pytest -p no:logging               # local throwaway Postgres, never the shared DB
 ```
 
-Bootstrap (run only when the team agrees; it writes to the database it points at):
+First-time setup of a database (writes to the database in `DATABASE_URL`; run once, by someone allowed to):
 
 ```bash
-.venv/Scripts/python -m app.cli seed                          # 36 permission codes + 11 expense categories
-.venv/Scripts/python -m app.cli create-admin admin "Full Name"  # the one Admin (password prompted)
+.venv/Scripts/python -m app.cli seed                               # permissions, expense categories, institute details from the templates
+.venv/Scripts/python -m app.cli create-admin admin "Administrator"   # the single Admin; password is prompted
 ```
+
+The database allows exactly **1 Admin + 4 Staff** (trigger on `users`). The Admin creates staff under Administration -> Staff;
+a fifth staff account returns `409 STAFF_ACCOUNT_LIMIT_REACHED`, and disabled staff still hold their slot.
+
+## Production checklist
+
+- `APP_ENV=production` (docs off, HSTS on). Startup refuses to run without `AADHAAR_ENC_KEY` / `AADHAAR_HASH_KEY`.
+- `FRONTEND_ORIGIN` = the real web origin(s), comma-separated. Bearer tokens only, no cookies.
+- Run behind HTTPS: `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --proxy-headers --forwarded-allow-ips <proxy ip>`.
+- Sessions: 12 h absolute, 30 min idle (`SESSION_HOURS`, `SESSION_IDLE_MINUTES`); 5 wrong passwords lock an account for 15 min;
+  20 failures from one IP in 15 min block that IP. Users change their own password from the account menu.
+- Every response carries security headers and `Cache-Control: no-store` on the API; logs never contain bodies, tokens or Aadhaar.
+- `FILE_STORAGE_ROOT` must be a private, backed-up folder (service job documents).
 
 `IMS_LIVE_DATABASE_URL=<supabase url> pytest tests/test_schema_drift.py` compares `app/models.py` with the live schema (read-only).
 

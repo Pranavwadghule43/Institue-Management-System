@@ -1,3 +1,4 @@
+import type { Bill, ReceiptSnapshot } from '../api/types';
 import { date, money } from './format';
 
 /** wa.me deep link — opens WhatsApp with a prefilled message; nothing is sent automatically. */
@@ -9,7 +10,7 @@ export function waLink(phone: string, text: string) {
 
 export const INSTITUTE = 'Updaate Computers';
 
-export function feeReminderText(name: string, amount: number, due: Date, balance: number) {
+export function feeReminderText(name: string, amount: number | string, due: Date | string, balance: number | string) {
   return `Dear ${name},\n\nThis is a gentle reminder from ${INSTITUTE} that your fee installment of ${money(amount)} is due on ${date(due)}.\nTotal balance: ${money(balance)}.\n\nPlease visit the institute or pay via UPI. Thank you!`;
 }
 
@@ -18,50 +19,46 @@ export function feeReminderText(name: string, amount: number, due: Date, balance
 
 const line = (label: string, value: string) => `${label}: ${value}`;
 
-export function receiptMessage(r: {
-  name: string; studentId: string; course: string; receiptNo: string; at: Date; amount: number; mode: string; paidTillDate: number; netFee: number; balance: number;
-}) {
+/** Built from the immutable receipt snapshot, so the message matches the printed receipt. */
+export function receiptMessage(r: ReceiptSnapshot) {
   return [
-    `*${INSTITUTE} — Fee Receipt*`,
+    `*${r.institute.name ?? INSTITUTE} — ${r.institute.receipt_heading}*`,
     '',
-    `Dear ${r.name},`,
+    `Dear ${r.student.name},`,
     'Thank you, we have received your fee payment.',
     '',
-    line('Receipt No', r.receiptNo),
-    line('Date', date(r.at)),
-    line('Student ID', r.studentId),
-    line('Course', r.course),
-    line('Mode', r.mode),
+    line('Receipt No', r.receipt_no),
+    line('Date', date(r.issued_at)),
+    line('Student ID', r.student.code),
+    line('Course', `${r.course.code} — ${r.course.name}`),
+    line('Mode', r.payment.mode_label),
     '',
-    `*Amount received: ${money(r.amount)}*`,
-    line('Net course fee', money(r.netFee)),
-    line('Paid till date', money(r.paidTillDate)),
+    `*Amount received: ${money(r.payment.amount)}*`,
+    line('Net course fee', money(r.net_fee)),
+    line('Paid till date', money(r.total_paid)),
     `*Balance: ${money(r.balance)}*`,
     '',
     '_This is a computer-generated receipt._',
   ].join('\n');
 }
 
-export function billMessage(b: {
-  name: string; billNo: string; jobId: string; at: Date; items: { name: string; qty: number; rate: number }[]; discount: number; total: number; paid: boolean; mode?: string;
-}) {
-  const rows = b.items.map((i, n) => `${n + 1}. ${i.name}\n   ${i.qty} × ${money(i.rate)} = ${money(i.qty * i.rate)}`);
-  const sub = b.items.reduce((t, i) => t + i.qty * i.rate, 0);
+export function billMessage(b: Bill) {
+  const rows = b.items.map((i, k) => `${k + 1}. ${i.name}\n   ${i.quantity} × ${money(i.rate)} = ${money(i.line_amount)}`);
   return [
-    `*${INSTITUTE} — Service Bill*`,
+    `*${b.institute.name ?? INSTITUTE} — Service Bill*`,
     '',
-    `Dear ${b.name},`,
-    b.paid ? 'Thank you for your payment. Your bill details are below.' : 'Please find your bill details below.',
+    `Dear ${b.customer.name},`,
+    b.status === 'Paid' ? 'Thank you for your payment. Your bill details are below.' : 'Please find your bill details below.',
     '',
-    line('Bill No', b.billNo),
-    line('Date', date(b.at)),
-    line('Job ref', b.jobId),
+    line('Bill No', b.code),
+    line('Date', date(b.created_at)),
+    line('Job ref', b.job.code),
     '',
     ...rows,
     '',
-    line('Subtotal', money(sub)),
-    ...(b.discount ? [line('Discount', `− ${money(b.discount)}`)] : []),
-    `*Grand total: ${money(b.total)}*`,
-    b.paid ? `Paid in full${b.mode ? ` by ${b.mode}` : ''}.` : '_Payment pending — please pay the full amount at the counter._',
+    line('Subtotal', money(b.subtotal)),
+    ...(Number(b.discount) ? [line('Discount', `− ${money(b.discount)}`)] : []),
+    `*Grand total: ${money(b.grand_total)}*`,
+    b.status === 'Paid' ? `Paid in full${b.payment ? ` by ${b.payment.mode_label}` : ''}.` : '_Payment pending — please pay the full amount at the counter._',
   ].join('\n');
 }

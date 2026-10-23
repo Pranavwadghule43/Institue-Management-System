@@ -33,6 +33,33 @@ def test_login_lockout_logout(client, admin):
     assert admin.get("/auth/me").status_code == 401
 
 
+def test_change_password_idle_timeout_and_security_headers(client, admin):
+    r = admin.post("/auth/change-password", json={"current_password": "wrong-one", "new_password": "brand-new-pass"})
+    assert r.json()["error"]["code"] == "INVALID_CURRENT_PASSWORD"
+    assert admin.post("/auth/change-password", json={"current_password": PASSWORD, "new_password": "short"}).status_code == 422
+    other = login(client, "admin")
+    assert admin.post("/auth/change-password", json={"current_password": PASSWORD, "new_password": "brand-new-pass"}).status_code == 204
+    assert other.get("/auth/me").status_code == 401 and admin.get("/auth/me").status_code == 200  # other devices signed out
+    login(client, "admin", "brand-new-pass")
+    with SessionLocal() as db:  # simulate 31 idle minutes
+        from datetime import timedelta
+        from app.models import UserSession
+        from app.common import now
+        for s in db.query(UserSession):
+            s.last_activity_at = now() - timedelta(minutes=31)
+        db.commit()
+    r = admin.get("/auth/me")
+    assert r.json()["error"]["code"] == "SESSION_EXPIRED"
+    h = client.get("/api/v1/health").headers
+    assert h["X-Content-Type-Options"] == "nosniff" and h["Cache-Control"] == "no-store" and "X-Request-ID" in h
+
+
+def test_ip_throttle(client):
+    for i in range(20):
+        client.post("/api/v1/auth/login", json={"username": f"nobody{i}", "password": "x"})
+    assert client.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD}).json()["error"]["code"] == "TOO_MANY_ATTEMPTS"
+
+
 def test_staff_limit_is_four_and_deactivation_keeps_the_slot(admin, client):
     created = [ok(new_staff(admin, f"staff{i}"), 201) for i in range(4)]
     assert created[0]["temporary_password"] and created[-1]["account_limit"] == {"admin_accounts": 1, "staff_used": 4, "staff_limit": 4, "staff_remaining": 0}

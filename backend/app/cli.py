@@ -9,12 +9,22 @@ import sys
 from sqlalchemy import func, select
 
 from .db import SessionLocal
-from .models import ExpenseCategory, User
+from .models import ExpenseCategory, InstituteSettings, User
 from .routers.admin import ensure_permission_catalog
 from .security import hash_password
 
 EXPENSE_CATEGORIES = ["Rent", "Salary", "Electricity", "Internet & Phone", "Stationery", "Printer & Toner", "Maintenance", "Marketing",
                       "Refreshments", "Miscellaneous", "Other"]
+
+
+# Institute identity from the receipt / bill paper templates; editable later in Settings.
+INSTITUTE_DEFAULTS = {
+    "name": "Updaate Computers", "tagline": "Computer Education & Digital Services", "receipt_heading": "Fee Receipt",
+    "address": "Near Mhasoba Mandir, Mhasoba Chowk, Dattawadi Pune - 30", "phone": "7888280807 / 8690328080",
+    "receipt_footer": "Fees once paid are non-refundable and non-transferable. Please keep this receipt for your records.",
+    "service_bill_footer": "Government fees, if any, are charged at actuals. GST not applicable on these services.",
+    "service_bill_account_note": "Login ID: provided separately. Password: use the secure setup or reset process; it is never printed.",
+}
 
 
 def seed(db) -> None:
@@ -23,6 +33,11 @@ def seed(db) -> None:
     for name in EXPENSE_CATEGORIES:
         if name.lower() not in have:
             db.add(ExpenseCategory(name=name, is_active=True))
+    s = db.get(InstituteSettings, 1) or InstituteSettings(id=1, fee_receipt_prefix="RCP", service_bill_prefix="SB")
+    for k, v in INSTITUTE_DEFAULTS.items():
+        if not getattr(s, k):
+            setattr(s, k, v)
+    db.merge(s)
     db.commit()
 
 

@@ -91,6 +91,13 @@ def _temp_password() -> str:
     return secrets.token_urlsafe(9)
 
 
+@router.get("/directory/staff")
+def staff_directory(db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)):
+    """Names only, for assignee pickers and filters available to every signed-in user."""
+    users = db.scalars(select(User).where(User.deleted_at.is_(None), User.is_active.is_(True)).order_by(User.role, User.full_name)).all()
+    return [{"id": u.id, "name": u.full_name, "role": role_label(u.role), "designation": u.designation} for u in users]
+
+
 @router.get("/staff")
 def list_staff(db: Session = Depends(get_db), _: CurrentUser = Depends(manage_staff)):
     users = db.scalars(select(User).where(User.deleted_at.is_(None)).order_by(User.role, User.full_name)).all()

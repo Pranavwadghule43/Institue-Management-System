@@ -1,0 +1,394 @@
+/* Fee receipt (A5 landscape) and service bill (A5 portrait), two-sided, from the institute's paper templates. */
+
+.doc-set {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+}
+
+.doc {
+  position: relative;
+  background: #fff;
+  color: #111;
+  border: 1px solid #222;
+  box-shadow: 0 2px 14px rgba(15, 23, 42, 0.1);
+  overflow: hidden;
+  font-family: Arial, Helvetica, 'IBM Plex Sans', sans-serif;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.doc--receipt {
+  width: 200mm;
+  min-height: 136mm;
+}
+.doc--bill {
+  width: 140mm;
+  min-height: 200mm;
+  display: flex;
+  flex-direction: column;
+}
+.doc b {
+  font-weight: 700;
+}
+
+.doc__watermark {
+  position: absolute;
+  left: 50%;
+  top: 58%;
+  width: 52%;
+  transform: translate(-50%, -50%);
+  opacity: 0.1;
+  pointer-events: none;
+}
+
+/* ---------- header ---------- */
+.doc__head {
+  display: flex;
+  align-items: center;
+  gap: 6mm;
+  padding: 5mm 6mm 3mm;
+}
+.doc__head img {
+  width: 40mm;
+}
+.doc__brand {
+  flex: 1;
+  text-align: center;
+}
+.doc__brand h1 {
+  margin: 0;
+  font-family: 'Segoe UI', 'Open Sans', Arial, sans-serif;
+  font-size: 30pt;
+  font-weight: 800;
+  line-height: 1.05;
+  color: #3b3d95;
+  letter-spacing: 0.01em;
+}
+.doc__brand p {
+  margin: 1.2mm 0 0;
+  font-weight: 700;
+}
+.doc__brand .doc__tagline,
+.doc__brand .doc__addr {
+  color: #17a5e3;
+  font-size: 9.5pt;
+}
+.doc__brand .doc__mob {
+  color: #f26a1b;
+  font-size: 11pt;
+}
+.doc__head.compact {
+  gap: 3mm;
+  padding: 3mm 4mm 2mm;
+}
+.doc__head.compact img {
+  width: 22mm;
+}
+.doc__head.compact h1 {
+  font-size: 17pt;
+}
+.doc__head.compact .doc__tagline,
+.doc__head.compact .doc__addr {
+  font-size: 6pt;
+  margin-top: 0.6mm;
+}
+.doc__head.compact .doc__mob {
+  font-size: 6.5pt;
+  margin-top: 0.6mm;
+}
+.doc__rule {
+  border-top: 3px solid #111;
+}
+
+/* ---------- body ---------- */
+.doc__body {
+  position: relative;
+  padding: 4mm 7mm 5mm;
+  font-size: 9.5pt;
+}
+.doc--bill .doc__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 4mm 5mm 6mm;
+  font-size: 8.5pt;
+}
+.doc__row3 {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 0.8fr;
+  margin-bottom: 3mm;
+}
+.doc__row2 {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  margin: 2.4mm 0;
+}
+.doc__fill {
+  display: flex;
+  align-items: baseline;
+  gap: 2mm;
+  margin: 3mm 0;
+}
+.doc__fill b {
+  white-space: nowrap;
+}
+.doc__fill span {
+  flex: 1;
+  min-height: 1.3em;
+  padding: 0 1mm 1.6mm;
+  line-height: 1.25;
+  border-bottom: 1px solid #333;
+}
+.doc__gap {
+  height: 4mm;
+}
+.doc__inst {
+  display: flex;
+  align-items: center;
+  gap: 4mm;
+  margin: 2mm 0 1mm;
+}
+.doc__inst > b {
+  white-space: nowrap;
+}
+.doc__boxes {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2.5mm 5mm;
+}
+.doc__box {
+  display: grid;
+  border: 1px solid #222;
+  font-size: 7.5pt;
+  text-align: center;
+}
+.doc__box span {
+  padding: 0.4mm 1mm 1.2mm;
+  min-height: 1.25em;
+}
+.doc__box span:first-child {
+  border-bottom: 1px solid #222;
+}
+.doc__box .ph {
+  color: #c4c8cf;
+}
+.doc__split {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-top: 1mm;
+}
+.doc__label {
+  font-size: 6.5pt;
+  font-weight: 700;
+  color: #333;
+}
+.doc__big {
+  font-size: 18pt;
+  font-weight: 800;
+  color: #1a58ab;
+}
+.doc__side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8mm;
+  font-size: 8.5pt;
+  text-align: right;
+}
+.doc__note {
+  margin: 2mm 0 0;
+  font-size: 8pt;
+  color: #333;
+}
+
+.doc__table {
+  width: 100%;
+  margin-top: 4mm;
+  border-collapse: collapse;
+}
+.doc__table th {
+  padding: 1.5mm 1mm;
+  font-weight: 700;
+  text-align: left;
+}
+.doc__table td {
+  padding: 1.2mm 1mm;
+  border-bottom: 1px dotted #bbb;
+  vertical-align: top;
+}
+.doc__table .ta-r {
+  text-align: right;
+}
+.doc__table .ta-c {
+  text-align: center;
+}
+.doc__total {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: end;
+  gap: 1.5mm 8mm;
+  margin-top: auto;
+  padding-top: 6mm;
+  text-align: right;
+}
+.doc__total .grand {
+  font-size: 10pt;
+  font-weight: 800;
+}
+
+.doc__stamp {
+  position: absolute;
+  top: 40%;
+  right: 12mm;
+  padding: 1mm 4mm;
+  border: 3px solid currentColor;
+  border-radius: 2mm;
+  font-size: 18pt;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  opacity: 0.75;
+  transform: rotate(-14deg);
+}
+.doc__stamp.paid {
+  color: #1a7f37;
+}
+.doc__stamp.reversed,
+.doc__stamp.cancelled {
+  color: #c62828;
+}
+
+/* ---------- back sides ---------- */
+.doc--back {
+  padding: 5mm 6mm;
+}
+.doc__terms-title {
+  margin: 0 0 3mm;
+  text-align: center;
+  font-size: 10pt;
+  font-weight: 400;
+}
+.doc__terms,
+.doc__terms-sign,
+.doc__courses-title {
+  font-family: 'Nirmala UI', 'Mangal', 'Noto Sans Devanagari', Arial, sans-serif;
+}
+.doc__terms {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 8pt;
+  line-height: 1.55;
+}
+.doc__terms-sign {
+  margin: 4mm 0 0;
+  font-size: 8.5pt;
+  line-height: 1.6;
+}
+.doc__services-title {
+  margin: 4mm 0 6mm;
+  text-align: center;
+  font-size: 19pt;
+  font-weight: 800;
+}
+.doc__cols {
+  display: grid;
+  grid-template-columns: 0.9fr 0.9fr 1.3fr;
+  gap: 0 3mm;
+  font-family: 'Times New Roman', Times, serif;
+  font-size: 8pt;
+}
+.doc__cols ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  line-height: 1.75;
+}
+.doc__courses-title {
+  margin: 22mm 0 4mm;
+  text-align: center;
+  font-size: 10.5pt;
+}
+.doc__cols--courses {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 10pt;
+  grid-template-columns: 1fr 0.9fr 0.9fr;
+}
+.doc__cols--courses ul {
+  line-height: 1.4;
+}
+.doc--bill.doc--back {
+  display: flex;
+  flex-direction: column;
+}
+.doc__backfoot {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-top: auto;
+  font-size: 8pt;
+}
+.doc__qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2mm;
+  font-size: 11pt;
+}
+.doc__qrbox {
+  width: 28mm;
+  height: 27mm;
+  border: 1px solid #222;
+}
+
+@page receipt {
+  size: A5 landscape;
+  margin: 5mm;
+}
+@page bill {
+  size: A5 portrait;
+  margin: 4mm;
+}
+
+@media print {
+  .doc-set {
+    display: block;
+  }
+  .doc {
+    margin: 0 auto;
+    box-shadow: none;
+    break-inside: avoid;
+  }
+  .doc--receipt {
+    page: receipt;
+    break-after: page;
+  }
+  .doc--bill {
+    page: bill;
+    break-after: page;
+  }
+  .doc-set > .doc:last-child {
+    break-after: auto;
+  }
+}
+
+/* Print only the document: the app (sidebar, dialogs, 1280px min-width layout) is hidden and the
+   templates in .print-root print at their true A5 size, front then back. */
+.print-root {
+  display: none;
+}
+@media print {
+  html,
+  body {
+    min-width: 0 !important;
+    background: #fff !important;
+  }
+  body > #root,
+  body > .toasts {
+    display: none !important;
+  }
+  .print-root {
+    display: block !important;
+  }
+}

@@ -16,23 +16,35 @@ from .routers import academics, admin, bills, dashboard, enquiries, expenses, fe
 logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("ims.request")
 
-app = FastAPI(title=settings.app_name, version="1.0.0",
-              docs_url="/docs" if settings.expose_docs else None, redoc_url=None, openapi_url="/openapi.json" if settings.expose_docs else None)
+docs = settings.docs_enabled
+app = FastAPI(title=settings.app_name, version="1.0.0", docs_url="/docs" if docs else None, redoc_url=None, openapi_url="/openapi.json" if docs else None)
 errors.install(app)
-app.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_origin], allow_credentials=True, allow_methods=["*"],
-                   allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"], expose_headers=["X-Request-ID", "Content-Disposition"])
+
+SECURITY_HEADERS = {"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+                    "Permissions-Policy": "camera=(), microphone=(), geolocation=()"}
 
 
 @app.middleware("http")
 async def request_log(request: Request, call_next):
-    """Correlation ID + route/method/status/duration. Never logs bodies, tokens or Aadhaar."""
+    """Correlation ID + route/method/status/duration + security headers. Never logs bodies, tokens or Aadhaar."""
     rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:16]
     request_ctx.set((request.client.host if request.client else None, (request.headers.get("user-agent") or "")[:500]))
     start = time.perf_counter()
     response = await call_next(request)
     response.headers["X-Request-ID"] = rid
+    response.headers.update(SECURITY_HEADERS)
+    if request.url.path.startswith(settings.api_v1_prefix):
+        response.headers.setdefault("Cache-Control", "no-store")  # financial / personal data must not be cached
+    if settings.production:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     log.info("rid=%s %s %s %s %.0fms", rid, request.method, request.url.path, response.status_code, (time.perf_counter() - start) * 1000)
     return response
+
+
+# Added last so it runs first: CORS answers preflights before anything else.
+app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credentials=False, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
+                   allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"], expose_headers=["X-Request-ID", "Content-Disposition"],
+                   max_age=600)
 
 
 api = APIRouter(prefix=settings.api_v1_prefix)

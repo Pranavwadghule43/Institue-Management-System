@@ -1,78 +1,67 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Download, FileDown, IndianRupee, MessageCircle, Printer, Search, SearchX, Undo2 } from 'lucide-react';
-import logo from '../../assets/logo.png';
-import { useApp } from '../../app/AppContext';
+import { errText, useApp } from '../../app/AppContext';
 import {
-  Badge, Confirm, Empty, Field, Modal, PageHeader, Pagination, Person, Segmented, SkeletonRows, Tabs, useDebounced, useLoading, usePaged,
+  Badge, Confirm, Empty, Field, LoadError, Modal, PageHeader, Pagination, Person, Segmented, SkeletonRows, Tabs, pager, useDebounced, usePage,
 } from '../../components/ui';
-import { balanceFor, db, feeState, isToday, markReminded, nextDue, overdueDays, sum, touch, useStore } from '../../data/store';
-import type { PayMode } from '../../data/types';
+import { api, download, useQuery, write, type Page } from '../../api/client';
+import type { PayMode, Payment, Receipt } from '../../api/types';
 import { PAY_LABEL, PAY_MODES } from '../../lib/payModes';
-import { amountInWords, date, money, relDays, time } from '../../lib/format';
-import { institute } from '../../lib/institute';
+import { date, iso, money, relDays } from '../../lib/format';
 import { feeReminderText, receiptMessage, waLink } from '../../lib/whatsapp';
 import { WhatsAppSend } from '../../components/WhatsAppSend';
+import { FeeReceiptPrint, PrintArea, receiptPdf, receiptPrintData } from '../../components/PrintDocs';
+import { saveFile } from '../../lib/pdf';
 import { PaymentsTable } from '../students/StudentProfile';
 import NotFound from '../NotFound';
 
 /* ------------------------------ Payment history / receipts ------------------------------ */
 
+type Range = 'today' | '7' | '30' | 'all';
+const rangeFrom = (r: Range) => {
+  if (r === 'all') return '';
+  const d = new Date();
+  d.setDate(d.getDate() - (r === 'today' ? 0 : Number(r) - 1));
+  return iso(d);
+};
+interface PaymentsPage extends Page<Payment> { totals: { collected: string; receipts: number; by_mode: { mode: PayMode; label: string; amount: string; count: number }[] } }
+
 export function PaymentHistory({ receipts }: { receipts?: boolean }) {
-  useStore();
-  const { toast } = useApp();
+  const { can, toast } = useApp();
   const [q, setQ] = useState('');
-  const [range, setRange] = useState<'today' | '7' | '30' | 'all'>(receipts ? '30' : '7');
+  const [range, setRange] = useState<Range>(receipts ? '30' : '7');
   const [mode, setMode] = useState<'' | PayMode>('');
   const dq = useDebounced(q);
-  const loading = useLoading(450, [range]);
-
-  const rows = useMemo(() => {
-    const s = dq.trim().toLowerCase();
-    const from = range === 'today' ? db.TODAY : range === 'all' ? new Date(0) : db.day(-Number(range) + 1, 0, 0);
-    return [...db.payments]
-      .reverse()
-      .filter((p) => p.at >= from)
-      .filter((p) => !receipts || p.status === 'Valid')
-      .filter((p) => !mode || p.mode === mode)
-      .filter((p) => {
-        if (!s) return true;
-        const st = db.studentById(p.studentId);
-        return p.receiptNo.toLowerCase().includes(s) || st.name.toLowerCase().includes(s) || st.id.toLowerCase().includes(s);
-      });
-  }, [dq, range, mode, receipts, db.payments.length]);
-  const pg = usePaged(rows, 12);
-  const valid = rows.filter((r) => r.status === 'Valid');
-  const byMode = PAY_MODES.map((m) => [m, sum(valid.filter((r) => r.mode === m), (r) => r.amount)] as const);
+  const [page, setPage] = usePage([dq, range, mode]);
+  const query = { q: dq, mode, date_from: rangeFrom(range), status: receipts ? 'Valid' : undefined };
+  const { data, error, loading, reload } = useQuery<PaymentsPage>('/fees/payments', { ...query, page, page_size: 12 });
+  const total = Number(data?.totals.collected ?? 0);
 
   return (
     <>
       <PageHeader
         title={receipts ? 'Receipts' : 'Payment history'}
-        sub={receipts ? 'Every fee receipt issued — reprint, download or share on WhatsApp.' : 'All student fee payments, including reversed entries kept for audit.'}
+        sub={receipts ? 'Every fee receipt issued — reprint or share on WhatsApp.' : 'All student fee payments, including reversed entries kept for audit.'}
         crumbs={[['Student Finance'], [receipts ? 'Receipts' : 'Payment history']]}
-        actions={
-          <button className="btn btn-secondary" onClick={() => toast('success', 'Export ready', `${rows.length} payments exported to Excel`)}>
+        actions={can('reports.view') ? (
+          <button className="btn btn-secondary" onClick={() => download(`/reports/${receipts ? 'fee-collection' : 'payment-history'}/export.xlsx`, { date_from: query.date_from || '2000-01-01', payment_mode: mode }).catch((e) => toast('error', errText(e)))}>
             <Download /> Export
           </button>
-        }
+        ) : undefined}
       />
       <section className="panel" style={{ marginBottom: 18 }}>
         <div className="ledger-sum">
           <div>
             <span>Total collected</span>
-            <strong>{money(sum(valid, (r) => r.amount))}</strong>
-            <div className="muted" style={{ fontSize: 12 }}>
-              {valid.length} receipts
-            </div>
+            <strong>{money(total)}</strong>
+            <div className="muted" style={{ fontSize: 12 }}>{data?.totals.receipts ?? 0} receipts</div>
           </div>
-          {byMode.slice(0, 3).map(([m, v]) => (
-            <div key={m}>
-              <span>{m}</span>
-              <strong>{money(v)}</strong>
-              <div className="muted" style={{ fontSize: 12 }}>
-                {valid.length ? Math.round((v / Math.max(1, sum(valid, (r) => r.amount))) * 100) : 0}% of total
-              </div>
+          {data?.totals.by_mode.slice(0, 3).map((m) => (
+            <div key={m.mode}>
+              <span>{m.label}</span>
+              <strong>{money(m.amount)}</strong>
+              <div className="muted" style={{ fontSize: 12 }}>{total ? Math.round((Number(m.amount) / total) * 100) : 0}% of total</div>
             </div>
           ))}
         </div>
@@ -83,31 +72,20 @@ export function PaymentHistory({ receipts }: { receipts?: boolean }) {
             <Search />
             <input className="input" placeholder="Receipt no, student name or ID…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search payments" />
           </div>
-          <Segmented
-            value={range}
-            onChange={setRange}
-            options={[
-              { value: 'today', label: 'Today' },
-              { value: '7', label: '7 days' },
-              { value: '30', label: '30 days' },
-              { value: 'all', label: 'All' },
-            ]}
-          />
+          <Segmented value={range} onChange={setRange} options={[{ value: 'today', label: 'Today' }, { value: '7', label: '7 days' }, { value: '30', label: '30 days' }, { value: 'all', label: 'All' }]} />
           <select className="select" value={mode} onChange={(e) => setMode(e.target.value as PayMode | '')} aria-label="Payment mode">
             <option value="">All modes</option>
-            {PAY_MODES.map((m) => (
-              <option key={m} value={m}>{PAY_LABEL[m]}</option>
-            ))}
+            {PAY_MODES.map((m) => <option key={m} value={m}>{PAY_LABEL[m]}</option>)}
           </select>
         </div>
-        {loading ? (
+        {error ? <LoadError error={error} retry={reload} /> : loading ? (
           <SkeletonRows rows={8} cols={6} />
-        ) : rows.length === 0 ? (
+        ) : data!.items.length === 0 ? (
           <Empty icon={<SearchX />} title="No payments found" body="No payments match this period or search. Try a wider date range." />
         ) : (
           <>
-            <PaymentsTable rows={pg.slice} showStudent />
-            <Pagination {...pg} noun={receipts ? 'receipts' : 'payments'} />
+            <PaymentsTable rows={data!.items} showStudent />
+            <Pagination {...pager(data, setPage)} noun={receipts ? 'receipts' : 'payments'} />
           </>
         )}
       </section>
@@ -115,161 +93,68 @@ export function PaymentHistory({ receipts }: { receipts?: boolean }) {
   );
 }
 
-/* ------------------------------ Receipt (UX-009) ------------------------------ */
+/* ------------------------------ Receipt (UX-009): printed from the immutable snapshot ------------------------------ */
 
 export function ReceiptView() {
-  useStore();
   const { no } = useParams();
-  const { role, user, toast } = useApp();
+  const { role, toast } = useApp();
   const [rev, setRev] = useState(false);
   const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
   const [wa, setWa] = useState(false);
-  const p = db.payments.find((x) => x.receiptNo === no);
-  if (!p) return <NotFound what="receipt" />;
-  const s = db.studentById(p.studentId);
-  const course = db.courseById(s.courseId);
-  const before = sum(db.payments.filter((x) => x.studentId === s.id && x.status === 'Valid' && x.at < p.at), (x) => x.amount);
-  const balanceAfter = Math.max(0, s.courseFee - s.discount - before - (p.status === 'Valid' ? p.amount : 0));
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const { data: r, error, loading } = useQuery<Receipt>(`/receipts/${no}`);
+  if (error?.status === 404) return <NotFound what="receipt" />;
+  if (error) return <LoadError error={error} />;
+  if (loading || !r) return <SkeletonRows rows={6} cols={3} />;
+  const s = r.snapshot;
+  const doc = receiptPrintData(r);
+  const savePdf = async () => {
+    setPdfBusy(true);
+    try {
+      saveFile(await receiptPdf(r));
+    } catch (e) {
+      toast('error', 'PDF could not be created', errText(e));
+    } finally {
+      setPdfBusy(false);
+    }
+  };
 
   return (
     <>
       <PageHeader
-        title={`Receipt ${p.receiptNo}`}
-        crumbs={[['Student Finance'], ['Receipts', '/fees/receipts'], [p.receiptNo]]}
+        title={`Receipt ${r.receipt_no}`}
+        crumbs={[['Student Finance'], ['Receipts', '/fees/receipts'], [r.receipt_no]]}
         actions={
           <>
-            {role === 'Admin' && p.status === 'Valid' && (
-              <button className="btn btn-danger-soft" onClick={() => setRev(true)}>
-                <Undo2 /> Reverse
-              </button>
-            )}
-            {p.status === 'Valid' && (
-              <button className="btn btn-whatsapp" onClick={() => setWa(true)}>
-                <MessageCircle /> Send on WhatsApp
-              </button>
-            )}
-            <button className="btn btn-secondary" onClick={() => window.print()}>
-              <FileDown /> Save as PDF
-            </button>
-            <button className="btn btn-primary" onClick={() => window.print()}>
-              <Printer /> Print
-            </button>
+            {role === 'Admin' && r.status === 'Valid' && <button className="btn btn-danger-soft" onClick={() => { setReason(''); setRev(true); }}><Undo2 /> Reverse</button>}
+            {r.status === 'Valid' && <button className="btn btn-whatsapp" onClick={() => setWa(true)}><MessageCircle /> Send on WhatsApp</button>}
+            <button className="btn btn-secondary" onClick={savePdf} disabled={pdfBusy}>{pdfBusy ? <span className="spinner" /> : <FileDown />} Download PDF</button>
+            <button className="btn btn-primary" onClick={() => window.print()}><Printer /> Print</button>
           </>
         }
       />
-      <article className="paper">
-        <div className="paper__band" />
-        <div className="paper__head">
-          <img src={logo} alt={institute.name} />
-          <div className="paper__inst">
-            <strong>{institute.name}</strong>
-            {institute.tagline}
-            <br />
-            {institute.address}
-            <br />
-            {institute.phone} · {institute.email}
-          </div>
+      {r.status === 'Reversed' && (
+        <div className="callout danger no-print" style={{ marginBottom: 16 }}>
+          <Undo2 /> <span>Reversed on {date(r.reversed_at!)} — {r.reversal_reason}. The receipt below is the original as issued.</span>
         </div>
-        <div className="paper__title">
-          <h2>{institute.receiptHeading}</h2>
-          <div style={{ textAlign: 'right', fontSize: 12.5 }}>
-            <div className="no">No. {p.receiptNo}</div>
-            <div style={{ color: '#7a8699' }}>
-              {date(p.at)}, {time(p.at)}
-            </div>
-          </div>
-        </div>
-        {p.status === 'Reversed' && <div className="stamp cancelled">REVERSED</div>}
-        {p.status === 'Valid' && <div className="stamp">PAID</div>}
-        <div className="paper__body">
-          <div className="paper__grid">
-            <div>
-              <span>Student name</span>
-              <strong>{s.name}</strong>
-            </div>
-            <div>
-              <span>Student ID</span>
-              <strong>{s.id}</strong>
-            </div>
-            <div>
-              <span>Father’s name</span>
-              <strong>{s.fatherName}</strong>
-            </div>
-            <div>
-              <span>Mobile</span>
-              <strong>{s.phone}</strong>
-            </div>
-            <div>
-              <span>Course</span>
-              <strong>
-                {course.code} — {course.name}
-              </strong>
-            </div>
-            <div>
-              <span>Batch</span>
-              <strong>{db.batchById(s.batchId).name}</strong>
-            </div>
-            <div>
-              <span>Payment mode</span>
-              <strong>
-                {PAY_LABEL[p.mode]}
-                {p.reference && ` · ${p.reference}`}
-              </strong>
-            </div>
-            <div>
-              <span>Received by</span>
-              <strong>{db.staffById(p.by).name}</strong>
-            </div>
-            <div>
-              <span>Next payment date</span>
-              <strong>{balanceFor(s) === 0 ? 'NIL' : nextDue(s) ? date(nextDue(s)!.due) : 'Schedule needed'}</strong>
-            </div>
-          </div>
-          <div className="paper__amount">
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: '#4a5568', letterSpacing: '.06em', textTransform: 'uppercase' }}>Amount received</div>
-              <div className="big num">{money(p.amount)}</div>
-              <small>{amountInWords(p.amount)}</small>
-            </div>
-            <div style={{ textAlign: 'right', fontSize: 13 }}>
-              <div>
-                Net course fee: <strong className="num">{money(s.courseFee - s.discount)}</strong>
-              </div>
-              <div>
-                Paid till date: <strong className="num">{money(before + (p.status === 'Valid' ? p.amount : 0))}</strong>
-              </div>
-              <div style={{ fontSize: 15, marginTop: 4 }}>
-                Balance: <strong className="num">{money(balanceAfter)}</strong>
-              </div>
-            </div>
-          </div>
-          {p.remark && (
-            <p style={{ marginTop: 14, fontSize: 12.5, color: '#4a5568' }}>
-              <strong>Remark:</strong> {p.remark}
-            </p>
-          )}
-        </div>
-        <div className="paper__foot">
-          <div style={{ maxWidth: 380 }}>{institute.receiptFooter}<br />This is a computer-generated receipt.</div>
-          <div className="paper__sign">
-            <i>{db.staffById(p.by).name.split(' ')[0]}</i>
-            <div>Authorised signatory</div>
-          </div>
-        </div>
-      </article>
+      )}
+      <FeeReceiptPrint r={doc} />
+      <PrintArea>
+        <FeeReceiptPrint r={doc} />
+      </PrintArea>
 
       <WhatsAppSend
         open={wa}
         onClose={() => setWa(false)}
-        title={`Send receipt ${p.receiptNo}`}
-        name={s.name}
-        phone={s.phone}
-        message={receiptMessage({ name: s.name, studentId: s.id, course: `${course.code} — ${course.name}`, receiptNo: p.receiptNo, at: p.at, amount: p.amount, mode: PAY_LABEL[p.mode], paidTillDate: before + p.amount, netFee: s.courseFee - s.discount, balance: balanceAfter })}
-        onPdf={() => window.print()}
+        title={`Send receipt ${r.receipt_no}`}
+        name={s.student.name}
+        phone={s.student.mobile}
+        message={receiptMessage(s)}
+        pdf={() => receiptPdf(r)}
         onOpened={() => {
-          db.audit.unshift({ id: `W${Date.now()}`, at: new Date(), actor: user.id, action: 'RECEIPT_SHARED', entity: 'Payment', entityId: p.receiptNo, summary: `Receipt ${p.receiptNo} opened in WhatsApp for ${s.name}`, ip: '192.168.1.11' });
-          touch();
-          toast('success', 'WhatsApp opened', `Receipt ready to send to ${s.name}`);
+          api(`/receipts/${r.receipt_no}/share-events`, { method: 'POST', body: { event_type: 'WHATSAPP_OPENED' } }).catch(() => {});
+          toast('success', 'WhatsApp opened', `Receipt ready to send to ${s.student.name}`);
         }}
       />
 
@@ -278,17 +163,22 @@ export function ReceiptView() {
         onClose={() => setRev(false)}
         tone="danger"
         icon={<Undo2 />}
-        title={`Reverse ${money(p.amount)} from ${s.name}?`}
+        title={`Reverse ${money(s.payment.amount)} from ${s.student.name}?`}
         body="The receipt stays in history marked REVERSED and the amount is added back to the student’s balance. This is recorded in the audit log."
         confirmLabel="Reverse payment"
+        busy={busy}
         disabled={reason.trim().length < 5}
-        onConfirm={() => {
-          p.status = 'Reversed';
-          p.remark = reason;
-          db.audit.unshift({ id: `R${Date.now()}`, at: new Date(), actor: user.id, action: 'PAYMENT_REVERSED', entity: 'Payment', entityId: p.receiptNo, summary: `Payment reversed — ${reason}`, ip: '192.168.1.11', before: { status: 'Valid' }, after: { status: 'Reversed' } });
-          touch();
-          setRev(false);
-          toast('success', 'Payment reversed', `${p.receiptNo} · balance updated`);
+        onConfirm={async () => {
+          setBusy(true);
+          try {
+            await write(api(`/fees/payments/${r.payment_id}/reverse`, { method: 'POST', body: { reason: reason.trim() } }));
+            setRev(false);
+            toast('success', 'Payment reversed', `${r.receipt_no} · balance updated`);
+          } catch (e) {
+            toast('error', errText(e));
+          } finally {
+            setBusy(false);
+          }
         }}
       >
         <Field label="Reason for reversal" required hint="Minimum 5 characters — shown in the audit log" htmlFor="rr">
@@ -301,58 +191,44 @@ export function ReceiptView() {
 
 /* ------------------------------ Fee reminders (UX-010) ------------------------------ */
 
-type RTab = 'Today' | 'Tomorrow' | 'Overdue' | 'Pending' | 'Fully Paid';
+type RTab = 'today' | 'tomorrow' | 'overdue' | 'pending' | 'fully_paid';
+const TAB_LABEL: Record<RTab, string> = { today: 'Due today', tomorrow: 'Due tomorrow', overdue: 'Overdue', pending: 'Pending', fully_paid: 'Fully Paid' };
+interface ReminderRow {
+  student: { code: string; name: string; mobile: string; whatsapp_number: string | null }; course: { id: number; code: string }; next_due_date: string | null;
+  installment_due: string; balance: string; total_paid: string; fee_state: string; overdue_days: number; last_reminded_at: string | null;
+}
+interface ReminderPage extends Page<ReminderRow> { counts: Record<RTab, number>; total_due: string }
 
 export function FeeReminders() {
-  useStore();
   const { can, toast } = useApp();
   const nav = useNavigate();
   const [params] = useSearchParams();
-  const [tab, setTab] = useState<RTab>((params.get('tab') as RTab) || 'Overdue');
-  const [preview, setPreview] = useState<{ id: string; text: string } | null>(null);
-  const loading = useLoading(400, [tab]);
-
-  const active = db.students.filter((s) => s.status === 'Active');
-  const groups: Record<RTab, typeof active> = {
-    Today: active.filter((s) => feeState(s) === 'Due Today'),
-    Tomorrow: active.filter((s) => feeState(s) === 'Due Tomorrow'),
-    Overdue: active.filter((s) => feeState(s) === 'Overdue').sort((a, b) => overdueDays(b) - overdueDays(a)),
-    Pending: active.filter((s) => feeState(s) !== 'Fully Paid').sort((a, b) => balanceFor(b) - balanceFor(a)),
-    'Fully Paid': db.students.filter((s) => feeState(s) === 'Fully Paid'),
-  };
-  const list = groups[tab];
-  const pg = usePaged(list, 12);
-  const total = sum(list, (s) => nextDue(s)?.remaining ?? 0);
+  const initial = (params.get('tab') ?? 'overdue').toLowerCase() as RTab;
+  const [tab, setTab] = useState<RTab>(initial in TAB_LABEL ? initial : 'overdue');
+  const [preview, setPreview] = useState<{ row: ReminderRow; text: string } | null>(null);
+  const [page, setPage] = usePage([tab]);
+  const { data, error, loading, reload } = useQuery<ReminderPage>('/fees/reminders', { tab, page, page_size: 12 });
+  const list = data?.items ?? [];
 
   return (
     <>
-      <PageHeader
-        title="Fee reminders"
-        sub="Open WhatsApp with a ready message — nothing is sent automatically."
-        crumbs={[['Student Finance'], ['Fee reminders']]}
-      />
+      <PageHeader title="Fee reminders" sub="Open WhatsApp with a ready message — nothing is sent automatically." crumbs={[['Student Finance'], ['Fee reminders']]} />
       <section className="panel">
         <div style={{ padding: '0 8px' }}>
-          <Tabs
-            value={tab}
-            onChange={setTab}
-            tabs={(Object.keys(groups) as RTab[]).map((t) => ({ value: t, label: t === 'Today' ? 'Due today' : t === 'Tomorrow' ? 'Due tomorrow' : t, count: groups[t].length, alert: t === 'Overdue' }))}
-          />
+          <Tabs value={tab} onChange={setTab} tabs={(Object.keys(TAB_LABEL) as RTab[]).map((t) => ({ value: t, label: TAB_LABEL[t], count: data?.counts[t], alert: t === 'overdue' }))} />
         </div>
-        {tab !== 'Fully Paid' && list.length > 0 && (
+        {tab !== 'fully_paid' && list.length > 0 && (
           <div className="table-toolbar" style={{ justifyContent: 'space-between' }}>
             <span style={{ fontSize: 13 }}>
-              <strong>{list.length}</strong> students · <strong className="num">{money(total)}</strong> due in this list
+              <strong>{data!.total}</strong> students · <strong className="num">{money(data!.total_due)}</strong> due in this list
             </span>
-            <span className="muted" style={{ fontSize: 12 }}>
-              Tip: each WhatsApp opens in a new tab with the message pre-filled.
-            </span>
+            <span className="muted" style={{ fontSize: 12 }}>Tip: each WhatsApp opens in a new tab with the message pre-filled.</span>
           </div>
         )}
-        {loading ? (
+        {error ? <LoadError error={error} retry={reload} /> : loading ? (
           <SkeletonRows rows={6} cols={6} />
         ) : list.length === 0 ? (
-          <Empty icon={<IndianRupee />} title={tab === 'Fully Paid' ? 'No fully paid students yet' : 'Nothing due here'} body={tab === 'Today' ? 'No installments are due today. Check Overdue for older dues.' : 'All caught up for this list.'} />
+          <Empty icon={<IndianRupee />} title={tab === 'fully_paid' ? 'No fully paid students yet' : 'Nothing due here'} body={tab === 'today' ? 'No installments are due today. Check Overdue for older dues.' : 'All caught up for this list.'} />
         ) : (
           <>
             <div className="table-wrap responsive">
@@ -362,79 +238,46 @@ export function FeeReminders() {
                     <th>Student</th>
                     <th>Mobile</th>
                     <th>Course</th>
-                    {tab !== 'Fully Paid' && <th>Due date</th>}
-                    <th className="ta-r">{tab === 'Fully Paid' ? 'Total paid' : 'Installment due'}</th>
-                    {tab !== 'Fully Paid' && <th className="ta-r">Total balance</th>}
+                    {tab !== 'fully_paid' && <th>Due date</th>}
+                    <th className="ta-r">{tab === 'fully_paid' ? 'Total paid' : 'Installment due'}</th>
+                    {tab !== 'fully_paid' && <th className="ta-r">Total balance</th>}
                     <th>Last reminded</th>
                     <th className="ta-r" />
                   </tr>
                 </thead>
                 <tbody>
-                  {pg.slice.map((s) => {
-                    const n = nextDue(s);
-                    const od = overdueDays(s);
-                    return (
-                      <tr key={s.id} className="is-clickable" onClick={() => nav(`/students/${s.id}`)}>
+                  {list.map((r) => (
+                    <tr key={r.student.code} className="is-clickable" onClick={() => nav(`/students/${r.student.code}`)}>
+                      <td><Person name={r.student.name} sub={r.student.code} /></td>
+                      <td className="num">{r.student.mobile}</td>
+                      <td>{r.course.code}</td>
+                      {tab !== 'fully_paid' && (
                         <td>
-                          <Person name={s.name} sub={s.id} />
-                        </td>
-                        <td className="num">{s.phone}</td>
-                        <td>{db.courseById(s.courseId).code}</td>
-                        {tab !== 'Fully Paid' && (
-                          <td>
-                            {n && date(n.due)}
-                            <div style={{ fontSize: 12, fontWeight: 600, color: od ? 'var(--danger-700)' : 'var(--ink-3)' }}>{od ? `${od} days overdue` : n && relDays(n.due)}</div>
-                          </td>
-                        )}
-                        <td className="ta-r num" style={{ fontWeight: 700 }}>
-                          {money(tab === 'Fully Paid' ? s.courseFee - s.discount : n?.remaining ?? 0)}
-                        </td>
-                        {tab !== 'Fully Paid' && <td className="ta-r num">{money(balanceFor(s))}</td>}
-                        <td>{s.lastReminded ? (isToday(s.lastReminded) ? <Badge tone="success" dot>Today</Badge> : <span className="muted">{relDays(s.lastReminded)}</span>) : <span className="muted">Never</span>}</td>
-                        <td className="ta-r" onClick={(e) => e.stopPropagation()}>
-                          <div className="actions">
-                            {n && (
-                              <button className="btn btn-whatsapp btn-sm" onClick={() => setPreview({ id: s.id, text: feeReminderText(s.name, n.remaining, n.due, balanceFor(s)) })}>
-                                <MessageCircle /> Remind
-                              </button>
-                            )}
-                            {n && can('fees.collect') && (
-                              <Link className="btn btn-secondary btn-sm" to={`/fees/collect?student=${s.id}`}>
-                                Collect
-                              </Link>
-                            )}
+                          {r.next_due_date && date(r.next_due_date)}
+                          <div style={{ fontSize: 12, fontWeight: 600, color: r.overdue_days ? 'var(--danger-700)' : 'var(--ink-3)' }}>
+                            {r.overdue_days ? `${r.overdue_days} days overdue` : r.next_due_date && relDays(r.next_due_date)}
                           </div>
                         </td>
-                      </tr>
-                    );
-                  })}
+                      )}
+                      <td className="ta-r num" style={{ fontWeight: 700 }}>{money(tab === 'fully_paid' ? r.total_paid : r.installment_due)}</td>
+                      {tab !== 'fully_paid' && <td className="ta-r num">{money(r.balance)}</td>}
+                      <td>{r.last_reminded_at ? (relDays(r.last_reminded_at) === 'Today' ? <Badge tone="success" dot>Today</Badge> : <span className="muted">{relDays(r.last_reminded_at)}</span>) : <span className="muted">Never</span>}</td>
+                      <td className="ta-r" onClick={(e) => e.stopPropagation()}>
+                        <div className="actions">
+                          {r.next_due_date && (
+                            <button className="btn btn-whatsapp btn-sm" onClick={() => setPreview({ row: r, text: feeReminderText(r.student.name, r.installment_due, r.next_due_date!, r.balance) })}>
+                              <MessageCircle /> Remind
+                            </button>
+                          )}
+                          {r.next_due_date && can('fees.collect') && <Link className="btn btn-secondary btn-sm" to={`/fees/collect?student=${r.student.code}`}>Collect</Link>}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
-            <div className="card-list">
-              {pg.slice.map((s) => {
-                const n = nextDue(s);
-                return (
-                  <div key={s.id} className="m-card">
-                    <div className="m-card__row">
-                      <Person name={s.name} sub={`${s.id} · ${s.phone}`} to={`/students/${s.id}`} />
-                      <strong className="num">{money(n?.remaining ?? 0)}</strong>
-                    </div>
-                    {n && (
-                      <div className="m-card__row">
-                        <span className="muted" style={{ fontSize: 12 }}>
-                          Due {date(n.due)}
-                        </span>
-                        <button className="btn btn-whatsapp btn-sm" onClick={() => setPreview({ id: s.id, text: feeReminderText(s.name, n.remaining, n.due, balanceFor(s)) })}>
-                          <MessageCircle /> Remind
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            <Pagination {...pg} noun="students" />
+            <Pagination {...pager(data, setPage)} noun="students" />
           </>
         )}
       </section>
@@ -443,14 +286,10 @@ export function FeeReminders() {
         {preview && (
           <>
             <div className="modal__head">
-              <div className="modal__icon success">
-                <MessageCircle />
-              </div>
+              <div className="modal__icon success"><MessageCircle /></div>
               <div>
                 <h2>WhatsApp reminder</h2>
-                <p>
-                  To {db.studentById(preview.id).name} · {db.studentById(preview.id).phone}
-                </p>
+                <p>To {preview.row.student.name} · {preview.row.student.whatsapp_number || preview.row.student.mobile}</p>
               </div>
             </div>
             <div className="modal__body">
@@ -459,17 +298,15 @@ export function FeeReminders() {
               </Field>
             </div>
             <div className="modal__foot">
-              <button className="btn btn-secondary" onClick={() => setPreview(null)}>
-                Cancel
-              </button>
+              <button className="btn btn-secondary" onClick={() => setPreview(null)}>Cancel</button>
               <a
                 className="btn btn-whatsapp"
-                href={waLink(db.studentById(preview.id).phone, preview.text)}
+                href={waLink(preview.row.student.whatsapp_number || preview.row.student.mobile, preview.text)}
                 target="_blank"
                 rel="noreferrer"
                 onClick={() => {
-                  markReminded(preview.id);
-                  toast('success', 'Reminder marked as sent', db.studentById(preview.id).name);
+                  write(api(`/fees/reminders/${preview.row.student.code}/opened-whatsapp`, { method: 'POST', body: {} })).catch((e) => toast('error', errText(e)));
+                  toast('success', 'WhatsApp opened', preview.row.student.name);
                   setPreview(null);
                 }}
               >
@@ -482,4 +319,3 @@ export function FeeReminders() {
     </>
   );
 }
-

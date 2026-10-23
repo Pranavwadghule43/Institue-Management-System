@@ -1,4 +1,4 @@
-import type { PayMode } from '../data/types';
+import type { PayMode } from '../api/types';
 import { PAY_LABEL, PAY_MODES } from '../lib/payModes';
 
 /** Payment-mode selector used at every counter (fees, bills, expenses). Keyboard: arrow keys move, digits 1–6 pick. */

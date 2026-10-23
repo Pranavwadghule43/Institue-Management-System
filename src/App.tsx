@@ -23,19 +23,29 @@ import { ReportViewer, ReportsCenter } from './pages/Reports';
 import { Audit, Backup, Permissions, Settings, Staff } from './pages/Admin';
 import NotFound, { PermissionDenied } from './pages/NotFound';
 
-/* Route guards are UX only — the API returns 403 regardless (05_USER_ROLES §Authorization). */
+/* Route guards are UX only — the API returns 401/403 regardless. */
 function Guard({ perm, children }: { perm: string; children: ReactNode }) {
   const { can } = useApp();
   return can(perm) ? <>{children}</> : <PermissionDenied />;
 }
 
+function Booting() {
+  return (
+    <div className="denied">
+      <span className="spinner" aria-label="Loading" />
+    </div>
+  );
+}
+
 function Protected() {
-  const { signedIn } = useApp();
+  const { signedIn, booting } = useApp();
+  if (booting) return <Booting />;
   return signedIn ? <AppShell /> : <Navigate to="/login" replace />;
 }
 
 function LoginRoute() {
-  const { signedIn } = useApp();
+  const { signedIn, booting } = useApp();
+  if (booting) return <Booting />;
   return signedIn ? <Navigate to="/" replace /> : <Login />;
 }
 

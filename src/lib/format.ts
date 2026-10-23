@@ -2,8 +2,19 @@ const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR',
 const inrPaise = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 2 });
 const num = new Intl.NumberFormat('en-IN');
 
-/** ₹1,24,500 — Indian digit grouping */
-export const money = (n: number, paise = false) => (paise ? inrPaise : inr).format(n);
+type D = Date | string;
+/** API date ("2026-10-23", local) or ISO timestamp -> Date */
+export const toDate = (d: D) => (typeof d === 'string' ? new Date(d.length === 10 ? `${d}T00:00:00` : d) : d);
+/** Local YYYY-MM-DD for API date params */
+export const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+/** API money strings ("1500.00") -> number, for display maths only; the server owns every total */
+export const n = (v: string | number | null | undefined) => Number(v ?? 0);
+
+/** ₹1,24,500 — Indian digit grouping (whole rupees unless paise=true or the amount has paise) */
+export const money = (v: number | string | null | undefined, paise = false) => {
+  const x = n(v);
+  return (paise || !Number.isInteger(x) ? inrPaise : inr).format(x);
+};
 
 /** ₹1.24L / ₹2.3Cr / ₹48.5K — for compact axis labels */
 export function moneyShort(n: number) {
@@ -21,13 +32,14 @@ const d2 = new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short' });
 const t1 = new Intl.DateTimeFormat('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
 const wd = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
-export const date = (d: Date) => d1.format(d);
-export const dateShort = (d: Date) => d2.format(d);
-export const time = (d: Date) => t1.format(d).toUpperCase();
-export const dateTime = (d: Date) => `${d1.format(d)}, ${time(d)}`;
-export const longDate = (d: Date) => wd.format(d);
+export const date = (d: D) => d1.format(toDate(d));
+export const dateShort = (d: D) => d2.format(toDate(d));
+export const time = (d: D) => t1.format(toDate(d)).toUpperCase();
+export const dateTime = (d: D) => `${date(d)}, ${time(d)}`;
+export const longDate = (d: D) => wd.format(toDate(d));
 
-export function relDays(d: Date, today = new Date()) {
+export function relDays(dd: D, today = new Date()) {
+  const d = toDate(dd);
   const a = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const b = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
   const diff = Math.round((a - b) / 86400000);
@@ -43,7 +55,8 @@ export function daysBetween(a: Date, b: Date) {
   return Math.round((y - x) / 86400000);
 }
 
-export function ago(d: Date, now = new Date()) {
+export function ago(dd: D, now = new Date()) {
+  const d = toDate(dd);
   const s = Math.max(0, (now.getTime() - d.getTime()) / 1000);
   if (s < 60) return 'just now';
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;

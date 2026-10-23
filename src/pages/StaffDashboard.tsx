@@ -1,48 +1,29 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { Check, Lock, MessageCircle } from 'lucide-react';
 import { useApp } from '../app/AppContext';
-import { JobStatusBadge, Panel, Person } from '../components/ui';
-import { balanceFor, db, feeState, isToday, nextDue, overdueDays, sum, useStore } from '../data/store';
+import { JobStatusBadge, LoadError, Panel, Person, SkeletonRows } from '../components/ui';
+import { useQuery } from '../api/client';
+import type { AuditItem, Followup, Job } from '../api/types';
 import { ago, date, longDate, money, time } from '../lib/format';
-import { PAY_LABEL } from '../lib/payModes';
 import { feeReminderText, waLink } from '../lib/whatsapp';
 import { DueLabel } from './services/Jobs';
 
-/* Staff view of the dashboard (Staff role, permission-driven — 05_USER_ROLES).
-   Shows only the signed-in person's own day: what they collected, the jobs assigned
-   to them, follow-ups they can act on, and what they're allowed to do. */
+interface MyDash {
+  fees_collected_today: { amount: string; receipts: number }; bills_closed_today: { amount: string; count: number }; jobs_completed_today: number;
+  open_assigned_jobs: number; cash_to_hand_over: string; assigned_jobs: Job[]; fee_followups: Followup[];
+  receipts_today: { receipt_no: string; student: string; at: string; mode: string; mode_label: string; amount: string }[]; recent_entries: AuditItem[];
+}
+
+/* Staff view of the dashboard: only the signed-in person's own day (resolved on the server from the session). */
 export default function StaffDashboard() {
-  useStore();
-  const { user, can, staffPerms, toast } = useApp();
+  const { user, can, toast } = useApp();
   const nav = useNavigate();
-
-  const myPayments = db.payments.filter((p) => p.by === user.id && p.status === 'Valid' && isToday(p.at)).sort((a, b) => b.at.getTime() - a.at.getTime());
-  const myBills = db.bills.filter((b) => b.by === user.id && b.status === 'Paid' && b.paidAt && isToday(b.paidAt));
-  const myExpenses = db.expenses.filter((e) => e.by === user.id && isToday(e.date));
-  const myJobs = db.jobs
-    .filter((j) => j.assignees.includes(user.id) && ['Pending', 'In Process', 'On Hold'].includes(j.status))
-    .sort((a, b) => a.lastDate.getTime() - b.lastDate.getTime());
-  const myDoneToday = db.jobs.filter((j) => j.assignees.includes(user.id) && j.history.some((h) => h.status === 'Completed' && h.by === user.id && isToday(h.at))).length;
-  const myActivity = db.audit.filter((a) => a.actor === user.id).slice(0, 6);
-  const followUps = can('reminders.view')
-    ? db.students
-        .filter((x) => x.status === 'Active' && ['Overdue', 'Due Today'].includes(feeState(x)))
-        .sort((a, b) => overdueDays(b) - overdueDays(a))
-        .slice(0, 6)
-    : [];
-
-  const cashInHand = sum(myPayments.filter((p) => p.mode === 'Cash'), (p) => p.amount) + sum(myBills.filter((b) => b.mode === 'Cash'), db.billTotal) - sum(myExpenses.filter((e) => e.mode === 'Cash'), (e) => e.amount);
-  const perms = staffPerms[user.id] ?? new Set<string>();
+  const { data: d, error, loading, reload } = useQuery<MyDash>('/dashboard/me');
+  if (error) return <LoadError error={error} retry={reload} />;
+  if (loading || !d) return <SkeletonRows rows={8} cols={4} />;
   const access: [string, string][] = [
-    ['Admissions', 'students.create'],
-    ['Collect fees', 'fees.collect'],
-    ['Fee reminders', 'reminders.view'],
-    ['Service jobs', 'service_jobs.update'],
-    ['Service bills', 'service_bill.create'],
-    ['Add expenses', 'expenses.create'],
-    ['Reports', 'reports.view'],
-    ['Override bill rate', 'service_bill.rate_override'],
-    ['Cancel bills', 'service_bill.cancel'],
+    ['Admissions', 'students.create'], ['Collect fees', 'fees.collect'], ['Fee reminders', 'reminders.view'], ['Service jobs', 'service_jobs.update'],
+    ['Service bills', 'service_bill.create'], ['Add expenses', 'expenses.create'], ['Reports', 'reports.view'], ['Override bill rate', 'service_bill.rate_override'], ['Cancel bills', 'service_bill.cancel'],
   ];
 
   return (
@@ -52,40 +33,23 @@ export default function StaffDashboard() {
           <div className="dayhead__date">{longDate(new Date())}</div>
           <h1>My counter</h1>
           <p className="dayhead__facts">
-            {user.name} · {user.designation}
+            {user.name}{user.designation && ` · ${user.designation}`}
             <span className="sep">·</span>
-            {myPayments.length} receipt{myPayments.length === 1 ? '' : 's'} issued by you today
+            {d.fees_collected_today.receipts} receipt{d.fees_collected_today.receipts === 1 ? '' : 's'} issued by you today
             <span className="sep">·</span>
-            {myJobs.length} job{myJobs.length === 1 ? '' : 's'} assigned to you
+            {d.open_assigned_jobs} job{d.open_assigned_jobs === 1 ? '' : 's'} assigned to you
           </p>
         </div>
       </div>
-
 
       <section className="ledger" aria-label="My day">
         <div className="ledger__group">
           <h2 className="ledger__title">My day</h2>
           <div className="ledger__cells">
-            <Link to="/fees/payments" className="cell">
-              <span>Fees I collected</span>
-              <strong>{money(sum(myPayments, (p) => p.amount))}</strong>
-              <small>{myPayments.length} receipts</small>
-            </Link>
-            <Link to="/services/bills" className="cell">
-              <span>Service bills I closed</span>
-              <strong>{money(sum(myBills, db.billTotal))}</strong>
-              <small>{myBills.length} paid bills</small>
-            </Link>
-            <Link to="/services/jobs" className="cell">
-              <span>Jobs I completed</span>
-              <strong>{myDoneToday}</strong>
-              <small>{myJobs.length} still open</small>
-            </Link>
-            <div className="cell cell--net">
-              <span>Cash to hand over</span>
-              <strong>{money(cashInHand)}</strong>
-              <small>cash received − cash expenses</small>
-            </div>
+            <Link to="/fees/payments" className="cell"><span>Fees I collected</span><strong>{money(d.fees_collected_today.amount)}</strong><small>{d.fees_collected_today.receipts} receipts</small></Link>
+            <Link to="/services/bills" className="cell"><span>Service bills I closed</span><strong>{money(d.bills_closed_today.amount)}</strong><small>{d.bills_closed_today.count} paid bills</small></Link>
+            <Link to="/services/jobs" className="cell"><span>Jobs I completed</span><strong>{d.jobs_completed_today}</strong><small>{d.open_assigned_jobs} still open</small></Link>
+            <div className="cell cell--net"><span>Cash to hand over</span><strong>{money(d.cash_to_hand_over)}</strong><small>cash received − cash expenses</small></div>
           </div>
         </div>
       </section>
@@ -93,39 +57,17 @@ export default function StaffDashboard() {
       <div className="dash-grid even">
         <div className="stack">
           <Panel flush title="Assigned to me" sub="Open service jobs where you are one of the assigned staff" actions={<Link to="/services/jobs" className="btn btn-ghost btn-sm">Job board</Link>}>
-            {myJobs.length === 0 ? (
-              <p className="muted" style={{ padding: 16, fontSize: 13 }}>
-                Nothing assigned to you right now.
-              </p>
-            ) : (
+            {d.assigned_jobs.length === 0 ? <p className="muted" style={{ padding: 16, fontSize: 13 }}>Nothing assigned to you right now.</p> : (
               <div className="table-wrap">
                 <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Job</th>
-                      <th>Service & customer</th>
-                      <th>Last date</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
+                  <thead><tr><th>Job</th><th>Service & customer</th><th>Last date</th><th>Status</th></tr></thead>
                   <tbody>
-                    {myJobs.map((j) => (
-                      <tr key={j.id} className="is-clickable" onClick={() => nav(`/services/jobs/${j.id}`)}>
-                        <td className="id">{j.id}</td>
-                        <td style={{ whiteSpace: 'normal' }}>
-                          <div style={{ fontWeight: 500 }}>
-                            {db.serviceById(j.serviceIds[0]).name}
-                          </div>
-                          <div className="muted" style={{ fontSize: 12 }}>
-                            {db.customerById(j.customerId).name}
-                          </div>
-                        </td>
-                        <td>
-                          <DueLabel j={j} />
-                        </td>
-                        <td>
-                          <JobStatusBadge s={j.status} />
-                        </td>
+                    {d.assigned_jobs.map((j) => (
+                      <tr key={j.code} className="is-clickable" onClick={() => nav(`/services/jobs/${j.code}`)}>
+                        <td className="id">{j.code}</td>
+                        <td style={{ whiteSpace: 'normal' }}><div style={{ fontWeight: 500 }}>{j.services[0]?.name}</div><div className="muted" style={{ fontSize: 12 }}>{j.customer.name}</div></td>
+                        <td><DueLabel j={j} /></td>
+                        <td><JobStatusBadge s={j.status} /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -134,40 +76,26 @@ export default function StaffDashboard() {
             )}
           </Panel>
 
-          {followUps.length > 0 && (
+          {d.fee_followups.length > 0 && (
             <Panel flush title="Fee follow-ups" sub="Overdue and due today" actions={<Link to="/fees/reminders" className="btn btn-ghost btn-sm">All reminders</Link>}>
               <div className="table-wrap">
                 <table className="table">
                   <tbody>
-                    {followUps.map((st) => {
-                      const n = nextDue(st)!;
-                      const od = overdueDays(st);
-                      return (
-                        <tr key={st.id} className="is-clickable" onClick={() => nav(`/students/${st.id}`)}>
-                          <td>
-                            <Person name={st.name} sub={`${st.id} · ${st.phone}`} />
-                          </td>
-                          <td>
-                            <div className="num" style={{ fontWeight: 600 }}>
-                              {money(n.remaining)}
-                            </div>
-                            <div style={{ fontSize: 12, color: od ? 'var(--danger-700)' : 'var(--accent-700)' }}>{od ? `${od} days overdue` : 'Due today'}</div>
-                          </td>
-                          <td className="ta-r" onClick={(e) => e.stopPropagation()}>
-                            <div className="actions">
-                              <a className="btn btn-whatsapp btn-sm" href={waLink(st.phone, feeReminderText(st.name, n.remaining, n.due, balanceFor(st)))} target="_blank" rel="noreferrer" onClick={() => toast('success', 'WhatsApp opened', st.name)}>
-                                <MessageCircle /> Remind
-                              </a>
-                              {can('fees.collect') && (
-                                <Link className="btn btn-secondary btn-sm" to={`/fees/collect?student=${st.id}`}>
-                                  Collect
-                                </Link>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                    {d.fee_followups.map((st) => (
+                      <tr key={st.code} className="is-clickable" onClick={() => nav(`/students/${st.code}`)}>
+                        <td><Person name={st.name} sub={`${st.code} · ${st.mobile}`} /></td>
+                        <td>
+                          <div className="num" style={{ fontWeight: 600 }}>{money(st.installment_due)}</div>
+                          <div style={{ fontSize: 12, color: st.overdue_days ? 'var(--danger-700)' : 'var(--accent-700)' }}>{st.overdue_days ? `${st.overdue_days} days overdue` : 'Due today'}</div>
+                        </td>
+                        <td className="ta-r" onClick={(e) => e.stopPropagation()}>
+                          <div className="actions">
+                            <a className="btn btn-whatsapp btn-sm" href={waLink(st.mobile, feeReminderText(st.name, st.installment_due, st.due_date, st.balance))} target="_blank" rel="noreferrer" onClick={() => toast('success', 'WhatsApp opened', st.name)}><MessageCircle /> Remind</a>
+                            {can('fees.collect') && <Link className="btn btn-secondary btn-sm" to={`/fees/collect?student=${st.code}`}>Collect</Link>}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -176,25 +104,14 @@ export default function StaffDashboard() {
         </div>
 
         <div className="stack">
-          <Panel flush title="My receipts today" actions={<Link to="/fees/receipts" className="btn btn-ghost btn-sm">All receipts</Link>}>
-            {myPayments.length === 0 ? (
-              <p className="muted" style={{ padding: 16, fontSize: 13 }}>
-                No receipts issued by you yet today.
-              </p>
-            ) : (
+          <Panel flush title="My receipts today" actions={can('receipts.view_print') ? <Link to="/fees/receipts" className="btn btn-ghost btn-sm">All receipts</Link> : undefined}>
+            {d.receipts_today.length === 0 ? <p className="muted" style={{ padding: 16, fontSize: 13 }}>No receipts issued by you yet today.</p> : (
               <div className="table-wrap">
                 <table className="table">
                   <tbody>
-                    {myPayments.slice(0, 6).map((p) => (
-                      <tr key={p.id} className="is-clickable" onClick={() => nav(`/fees/receipts/${p.receiptNo}`)}>
-                        <td className="id">{p.receiptNo}</td>
-                        <td>{db.studentById(p.studentId).name}</td>
-                        <td className="muted">
-                          {time(p.at)} · {PAY_LABEL[p.mode]}
-                        </td>
-                        <td className="ta-r num" style={{ fontWeight: 600 }}>
-                          {money(p.amount)}
-                        </td>
+                    {d.receipts_today.map((p) => (
+                      <tr key={p.receipt_no} className="is-clickable" onClick={() => nav(`/fees/receipts/${p.receipt_no}`)}>
+                        <td className="id">{p.receipt_no}</td><td>{p.student}</td><td className="muted">{time(p.at)} · {p.mode_label}</td><td className="ta-r num" style={{ fontWeight: 600 }}>{money(p.amount)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -207,31 +124,17 @@ export default function StaffDashboard() {
             <ul className="access-list">
               {access.map(([label, perm]) => {
                 const ok = can(perm);
-                return (
-                  <li key={perm} className={ok ? 'ok' : 'no'}>
-                    {ok ? <Check /> : <Lock />}
-                    {label}
-                  </li>
-                );
+                return <li key={perm} className={ok ? 'ok' : 'no'}>{ok ? <Check /> : <Lock />}{label}</li>;
               })}
             </ul>
-            <p className="muted" style={{ fontSize: 12, marginTop: 10 }}>
-              {perms.size} permissions granted · Admin-only actions are locked for all staff.
-            </p>
+            <p className="muted" style={{ fontSize: 12, marginTop: 10 }}>{user.permissions.length} permissions granted · Admin-only actions are locked for all staff.</p>
           </Panel>
 
           <Panel flush title="My recent entries">
             <div className="feed">
-              {myActivity.length === 0 && <p className="muted" style={{ padding: 16, fontSize: 13 }}>No entries yet.</p>}
-              {myActivity.map((a) => (
-                <div className="feed-item" key={a.id}>
-                  <div>
-                    <p>{a.summary}</p>
-                    <small>
-                      {ago(a.at)} · {date(a.at)}
-                    </small>
-                  </div>
-                </div>
+              {d.recent_entries.length === 0 && <p className="muted" style={{ padding: 16, fontSize: 13 }}>No entries yet.</p>}
+              {d.recent_entries.map((a, i) => (
+                <div className="feed-item" key={i}><div><p>{a.summary}</p><small>{ago(a.at)} · {date(a.at)}</small></div></div>
               ))}
             </div>
           </Panel>

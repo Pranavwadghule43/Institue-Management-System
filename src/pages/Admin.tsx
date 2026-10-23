@@ -1,271 +1,248 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
-  AlertTriangle, Building2, CheckCircle2, ChevronDown, ChevronRight, CloudUpload, Database, Download, FileText, KeyRound, ListChecks, Lock, LockOpen, Plus,
-  Receipt, RotateCcw, Search, ShieldCheck, Tags, UserX, XCircle,
+  Building2, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileText, KeyRound, ListChecks, Lock, LockOpen, Plus, Receipt, Search, ShieldCheck, Tags, UserX,
 } from 'lucide-react';
-import { ADMIN_ONLY, PERMISSIONS, useApp } from '../app/AppContext';
-import { Badge, Confirm, Drawer, Empty, Field, Menu, PageHeader, Pagination, Panel, Person, Segmented, StatusDot, Switch, usePaged } from '../components/ui';
-import { db, touch, useStore } from '../data/store';
-import type { Staff as StaffT } from '../data/types';
+import { ADMIN_ONLY, PERMISSIONS, errText, useApp } from '../app/AppContext';
+import { Badge, Confirm, Drawer, Empty, Field, LoadError, Menu, Modal, PageHeader, Pagination, Person, Segmented, SkeletonRows, StatusDot, Switch, pager, useDebounced, usePage } from '../components/ui';
+import { api, useQuery, write, type Page } from '../api/client';
+import type { AccountLimit, ExpenseCategory, Ref, Settings as SettingsT, StaffMember } from '../api/types';
 import { ago, dateTime } from '../lib/format';
-import { institute, saveInstituteSettings } from '../lib/institute';
 
-/* ------------------------------ Staff (UX-023) ------------------------------ */
+/* ------------------------------ Staff (UX-023): 1 Admin + max 4 Staff ------------------------------ */
+
+function TempPassword({ value, name, onClose }: { value: string | null; name: string; onClose: () => void }) {
+  const { toast } = useApp();
+  return (
+    <Modal open={!!value} onClose={onClose}>
+      <div className="modal__head">
+        <div className="modal__icon success"><KeyRound /></div>
+        <div>
+          <h2>Temporary password for {name}</h2>
+          <p>Shown only once. Hand it over in person; they should change it after signing in (account menu → Change password).</p>
+        </div>
+      </div>
+      <div className="modal__body">
+        <div className="row" style={{ gap: 8 }}>
+          <input className="input mono" readOnly value={value ?? ''} onFocus={(e) => e.target.select()} />
+          <button className="btn btn-secondary" onClick={() => navigator.clipboard?.writeText(value ?? '').then(() => toast('success', 'Copied'))}><Copy /> Copy</button>
+        </div>
+      </div>
+      <div className="modal__foot"><button className="btn btn-primary" onClick={onClose}>Done</button></div>
+    </Modal>
+  );
+}
 
 export function Staff() {
-  useStore();
   const { toast, user } = useApp();
-  const [reset, setReset] = useState<StaffT | null>(null);
-  const [toggle, setToggle] = useState<StaffT | null>(null);
+  const [reset, setReset] = useState<StaffMember | null>(null);
+  const [toggle, setToggle] = useState<StaffMember | null>(null);
   const [add, setAdd] = useState(false);
-  const [f, setF] = useState({ name: '', username: '', phone: '', designation: '' });
-  const [submitted, setSubmitted] = useState(false);
-  const errs = { name: !f.name.trim() ? 'Name is required' : '', username: !/^[a-z0-9._]{3,}$/.test(f.username) ? 'Lowercase letters, numbers, dot or underscore (min 3)' : db.staff.some((s) => s.username === f.username) ? 'Username already taken' : '' };
+  const [temp, setTemp] = useState<{ name: string; password: string } | null>(null);
+  const [f, setF] = useState({ full_name: '', username: '', mobile: '', designation: '' });
+  const [errs, setErrs] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const { data, error, loading, reload } = useQuery<{ items: StaffMember[]; account_limit: AccountLimit }>('/staff');
+  const lim = data?.account_limit;
+  const full = !!lim && lim.staff_remaining <= 0;
+
+  const create = async () => {
+    setBusy(true);
+    try {
+      const r = await write(api<{ staff: StaffMember; temporary_password: string }>('/staff', { method: 'POST', body: { ...f, mobile: f.mobile || null, designation: f.designation || null } }));
+      setAdd(false);
+      setF({ full_name: '', username: '', mobile: '', designation: '' });
+      setErrs({});
+      setTemp({ name: r.staff.full_name, password: r.temporary_password });
+    } catch (e) {
+      setErrs((e as { fields?: Record<string, string> }).fields ?? {});
+      toast('error', errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const act = async (s: StaffMember, path: string, msg: string) => {
+    try {
+      await write(api(`/staff/${s.id}/${path}`, { method: 'POST' }));
+      toast('success', msg, s.full_name);
+    } catch (e) {
+      toast('error', errText(e));
+    }
+  };
 
   return (
     <>
       <PageHeader
         title="Staff"
-        sub="Accounts that can sign in. Permissions are set per person."
+        sub={lim ? `Accounts that can sign in · ${lim.staff_used} of ${lim.staff_limit} staff accounts used (plus 1 Admin)` : 'Accounts that can sign in.'}
         crumbs={[['Administration'], ['Staff']]}
-        actions={
-          <button className="btn btn-primary" onClick={() => setAdd(true)}>
-            <Plus /> Add staff
-          </button>
-        }
+        actions={<button className="btn btn-primary" onClick={() => setAdd(true)} disabled={full} title={full ? 'Maximum 4 staff accounts' : undefined}><Plus /> Add staff</button>}
       />
+      {full && <div className="callout warning" style={{ marginBottom: 16 }}><Lock /> <span>All {lim!.staff_limit} staff accounts are in use. Disabled accounts still occupy a slot.</span></div>}
       <section className="panel">
-        <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Username</th>
-                <th>Role</th>
-                <th>Mobile</th>
-                <th>Status</th>
-                <th>Last sign-in</th>
-                <th className="ta-r" />
-              </tr>
-            </thead>
-            <tbody>
-              {db.staff.map((s) => (
-                <tr key={s.id}>
-                  <td>
-                    <Person name={s.name} sub={s.designation} />
-                  </td>
-                  <td className="id">{s.username}</td>
-                  <td>{s.role === 'Admin' ? <Badge tone="primary" icon={<ShieldCheck />}>Admin</Badge> : <Badge tone="neutral">Staff</Badge>}</td>
-                  <td className="num">{s.phone}</td>
-                  <td>
-                    <StatusDot s={s.status} />
-                  </td>
-                  <td>{s.lastLogin ? ago(s.lastLogin) : '—'}</td>
-                  <td className="ta-r">
-                    {s.id !== user.id && (
-                      <Menu>
-                        <button className="menu__item" onClick={() => setReset(s)}>
-                          <KeyRound /> Reset password
-                        </button>
-                        {s.status === 'Locked' && (
-                          <button
-                            className="menu__item"
-                            onClick={() => {
-                              s.status = 'Active';
-                              touch();
-                              toast('success', 'Account unlocked', s.name);
-                            }}
-                          >
-                            <LockOpen /> Unlock account
+        {error ? <LoadError error={error} retry={reload} /> : loading ? <SkeletonRows rows={5} cols={6} /> : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Mobile</th><th>Status</th><th>Last sign-in</th><th className="ta-r" /></tr></thead>
+              <tbody>
+                {data!.items.map((s) => (
+                  <tr key={s.id}>
+                    <td><Person name={s.full_name} sub={s.designation ?? undefined} /></td>
+                    <td className="id">{s.username}</td>
+                    <td>{s.role === 'Admin' ? <Badge tone="primary" icon={<ShieldCheck />}>Admin</Badge> : <Badge tone="neutral">Staff</Badge>}</td>
+                    <td className="num">{s.mobile ?? '—'}</td>
+                    <td><StatusDot s={s.status} /></td>
+                    <td>{s.last_login_at ? ago(s.last_login_at) : '—'}</td>
+                    <td className="ta-r">
+                      {s.id !== user.id && s.role !== 'Admin' && (
+                        <Menu>
+                          <button className="menu__item" onClick={() => setReset(s)}><KeyRound /> Reset password</button>
+                          {s.status === 'Locked' && <button className="menu__item" onClick={() => act(s, 'unlock', 'Account unlocked')}><LockOpen /> Unlock account</button>}
+                          <div className="menu__sep" />
+                          <button className={`menu__item ${s.status !== 'Disabled' ? 'danger' : ''}`} onClick={() => setToggle(s)}>
+                            {s.status === 'Disabled' ? <CheckCircle2 /> : <UserX />} {s.status === 'Disabled' ? 'Enable account' : 'Disable account'}
                           </button>
-                        )}
-                        <div className="menu__sep" />
-                        <button className={`menu__item ${s.status !== 'Disabled' ? 'danger' : ''}`} onClick={() => setToggle(s)}>
-                          {s.status === 'Disabled' ? <CheckCircle2 /> : <UserX />} {s.status === 'Disabled' ? 'Enable account' : 'Disable account'}
-                        </button>
-                      </Menu>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                        </Menu>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
-      <Confirm open={!!reset} onClose={() => setReset(null)} icon={<KeyRound />} title={`Reset password for ${reset?.name}?`} body="A temporary password will be generated. They must change it at next sign-in. All their active sessions will be signed out." confirmLabel="Reset password" onConfirm={() => { toast('success', 'Temporary password created', `Share it with ${reset?.name} in person`); setReset(null); }} />
+      <Confirm open={!!reset} onClose={() => setReset(null)} icon={<KeyRound />} title={`Reset password for ${reset?.full_name}?`}
+        body="A temporary password will be generated and their active sessions signed out." confirmLabel="Reset password"
+        onConfirm={async () => {
+          try {
+            const r = await write(api<{ temporary_password: string }>(`/staff/${reset!.id}/reset-password`, { method: 'POST' }));
+            setTemp({ name: reset!.full_name, password: r.temporary_password });
+          } catch (e) {
+            toast('error', errText(e));
+          }
+          setReset(null);
+        }} />
       <Confirm
         open={!!toggle}
         onClose={() => setToggle(null)}
         tone={toggle?.status === 'Disabled' ? 'primary' : 'danger'}
         icon={<UserX />}
-        title={`${toggle?.status === 'Disabled' ? 'Enable' : 'Disable'} ${toggle?.name}?`}
-        body={toggle?.status === 'Disabled' ? 'They will be able to sign in again with their existing permissions.' : 'They will be signed out immediately and can’t sign in. Their history is kept.'}
+        title={`${toggle?.status === 'Disabled' ? 'Enable' : 'Disable'} ${toggle?.full_name}?`}
+        body={toggle?.status === 'Disabled' ? 'They will be able to sign in again with their existing permissions.' : 'They are signed out immediately and can’t sign in. The account still counts toward the 4-staff limit.'}
         confirmLabel={toggle?.status === 'Disabled' ? 'Enable account' : 'Disable account'}
-        onConfirm={() => {
-          toggle!.status = toggle!.status === 'Disabled' ? 'Active' : 'Disabled';
-          touch();
-          toast('success', `Account ${toggle!.status === 'Disabled' ? 'disabled' : 'enabled'}`, toggle!.name);
+        onConfirm={async () => {
+          const s = toggle!;
           setToggle(null);
+          await act(s, s.status === 'Disabled' ? 'activate' : 'deactivate', s.status === 'Disabled' ? 'Account enabled' : 'Account disabled');
         }}
       />
-      <Drawer
-        open={add}
-        onClose={() => setAdd(false)}
-        title="Add staff member"
-        sub="New staff start with no permissions — grant them on the Permissions page"
-        foot={
-          <>
-            <button className="btn btn-secondary" onClick={() => setAdd(false)}>
-              Cancel
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={() => {
-                setSubmitted(true);
-                if (errs.name || errs.username) return;
-                db.staff.push({ id: `U${db.staff.length + 1}`, name: f.name.trim(), username: f.username, phone: f.phone, designation: f.designation || 'Staff', role: 'Staff', status: 'Active', lastLogin: null });
-                touch();
-                toast('success', 'Staff account created', `${f.name} · temporary password generated`);
-                setAdd(false);
-                setSubmitted(false);
-                setF({ name: '', username: '', phone: '', designation: '' });
-              }}
-            >
-              Create account
-            </button>
-          </>
-        }
-      >
+      <Drawer open={add} onClose={() => setAdd(false)} title="Add staff member" sub="New staff start with no permissions — grant them on the Permissions page"
+        foot={<><button className="btn btn-secondary" onClick={() => setAdd(false)}>Cancel</button><button className="btn btn-primary" disabled={busy || !f.full_name.trim() || !f.username.trim()} onClick={create}>{busy && <span className="spinner" />}Create account</button></>}>
         <div className="form-grid">
-          <Field label="Full name" required className="span-2" error={submitted ? errs.name : ''} htmlFor="sn">
-            <input id="sn" className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
-          </Field>
-          <Field label="Username" required error={submitted ? errs.username : ''} htmlFor="su">
-            <input id="su" className="input" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value.toLowerCase() })} autoComplete="off" />
-          </Field>
-          <Field label="Mobile" htmlFor="sp">
-            <input id="sp" className="input num" value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} />
-          </Field>
-          <Field label="Designation" className="span-2" htmlFor="sd">
-            <input id="sd" className="input" placeholder="e.g. Front Desk" value={f.designation} onChange={(e) => setF({ ...f, designation: e.target.value })} />
-          </Field>
+          <Field label="Full name" required className="span-2" error={errs.full_name} htmlFor="sn"><input id="sn" className="input" value={f.full_name} onChange={(e) => setF({ ...f, full_name: e.target.value })} /></Field>
+          <Field label="Username" required error={errs.username} hint="Lowercase letters, numbers, dot or underscore" htmlFor="su"><input id="su" className="input" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value.toLowerCase() })} autoComplete="off" /></Field>
+          <Field label="Mobile" error={errs.mobile} htmlFor="sp"><input id="sp" className="input num" value={f.mobile} onChange={(e) => setF({ ...f, mobile: e.target.value })} /></Field>
+          <Field label="Designation" className="span-2" htmlFor="sd"><input id="sd" className="input" placeholder="e.g. Front Desk" value={f.designation} onChange={(e) => setF({ ...f, designation: e.target.value })} /></Field>
         </div>
       </Drawer>
+      <TempPassword value={temp?.password ?? null} name={temp?.name ?? ''} onClose={() => setTemp(null)} />
     </>
   );
 }
 
 /* ------------------------------ Permissions (UX-024) ------------------------------ */
 
+interface Matrix { catalog: { code: string; description: string; admin_only: boolean }[]; staff: StaffMember[] }
+
 export function Permissions() {
-  const { staffPerms, setStaffPerms, toast, user } = useApp();
-  const staffUsers = db.staff.filter((s) => s.role === 'Staff');
-  const [draft, setDraft] = useState(() => Object.fromEntries(Object.entries(staffPerms).map(([k, v]) => [k, new Set(v)])));
-  const changes = useMemo(() => {
-    let n = 0;
-    for (const u of staffUsers) {
-      const a = staffPerms[u.id] ?? new Set();
-      const b = draft[u.id] ?? new Set();
-      for (const p of new Set([...a, ...b])) if (a.has(p) !== b.has(p)) n++;
-    }
-    return n;
-  }, [draft, staffPerms, staffUsers]);
-
-  const toggle = (uid: string, perm: string) =>
-    setDraft((d) => {
-      const s = new Set(d[uid] ?? []);
-      if (s.has(perm)) s.delete(perm);
-      else s.add(perm);
-      return { ...d, [uid]: s };
-    });
+  const { toast } = useApp();
+  const { data, error, loading, reload } = useQuery<Matrix>('/permissions');
+  const [draft, setDraft] = useState<Record<number, Set<string>>>({});
+  const [busy, setBusy] = useState(false);
+  const saved = useMemo(() => Object.fromEntries((data?.staff ?? []).map((s) => [s.id, new Set(s.permissions ?? [])])), [data]);
+  useEffect(() => setDraft(Object.fromEntries(Object.entries(saved).map(([k, v]) => [k, new Set(v)]))), [saved]);
+  const staffUsers = data?.staff ?? [];
+  const changed = staffUsers.filter((u) => {
+    const a = saved[u.id] ?? new Set();
+    const b = draft[u.id] ?? new Set();
+    return a.size !== b.size || [...a].some((p) => !b.has(p));
+  });
   const selectable = PERMISSIONS.flatMap((g) => g.items.map(([key]) => key)).filter((key) => !ADMIN_ONLY.has(key));
-  const selectAll = (uid: string, checked: boolean) => setDraft((d) => ({ ...d, [uid]: new Set(checked ? selectable : []) }));
+  const toggle = (uid: number, perm: string) => setDraft((d) => {
+    const s = new Set(d[uid] ?? []);
+    if (s.has(perm)) s.delete(perm);
+    else s.add(perm);
+    return { ...d, [uid]: s };
+  });
+  const save = async () => {
+    setBusy(true);
+    try {
+      for (const u of changed) await api(`/staff/${u.id}/permissions`, { method: 'PUT', body: { codes: [...(draft[u.id] ?? [])] } });
+      await write(Promise.resolve());
+      toast('success', 'Permissions saved', `${changed.length} staff updated · recorded in the audit log`);
+    } catch (e) {
+      toast('error', errText(e));
+      reload();
+    } finally {
+      setBusy(false);
+    }
+  };
 
+  if (error) return <LoadError error={error} retry={reload} />;
   return (
     <>
       <PageHeader title="Permissions" sub="Grant each staff member only what they need. Admin-only actions can’t be delegated." crumbs={[['Administration'], ['Permissions']]} />
       <section className="panel">
-        <div className="table-wrap">
-          <table className="table perm-table">
-            <thead>
-              <tr>
-                <th style={{ minWidth: 240 }}>Permission</th>
-                <th className="user-col">
-                  Admin
-                  <small>Full access</small>
-                </th>
-                {staffUsers.map((u) => (
-                  <th key={u.id} className="user-col">
-                    {u.name.split(' ')[0]}
-                    <small>{u.designation}</small>
-                    <label className="check" style={{ justifyContent: 'center', marginTop: 6 }}><input type="checkbox" aria-label={`Select all permissions for ${u.name}`} disabled={u.status === 'Disabled'} checked={selectable.every((key) => draft[u.id]?.has(key))} ref={(node) => { if (node) node.indeterminate = selectable.some((key) => draft[u.id]?.has(key)) && !selectable.every((key) => draft[u.id]?.has(key)); }} onChange={(e) => selectAll(u.id, e.target.checked)} /> Select all</label>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {PERMISSIONS.map((g) => (
-                <Fragment key={g.group}>
-                  <tr className="perm-group">
-                    <td colSpan={2 + staffUsers.length}>
-                      {g.group === 'Admin only' && <Lock size={12} style={{ verticalAlign: -1, marginRight: 6 }} />}
-                      {g.group}
-                    </td>
-                  </tr>
-                  {g.items.map(([key, label]) => (
-                    <tr key={key}>
-                      <td className="perm-name">
-                        {label}
-                        <code>{key}</code>
-                      </td>
-                      <td className="ta-c">
-                        <CheckCircle2 size={18} style={{ color: 'var(--success-500)' }} />
-                      </td>
-                      {staffUsers.map((u) => (
-                        <td key={u.id} className="ta-c">
-                          {ADMIN_ONLY.has(key) ? (
-                            <span className="lock-note" title="Admin only" style={{ justifyContent: 'center' }}>
-                              <Lock />
-                            </span>
-                          ) : (
-                            <Switch on={!!draft[u.id]?.has(key)} onChange={() => toggle(u.id, key)} label={`${label} for ${u.name}`} disabled={u.status === 'Disabled'} />
-                          )}
-                        </td>
-                      ))}
-                    </tr>
+        {loading ? <SkeletonRows rows={8} cols={4} /> : !staffUsers.length ? <Empty icon={<ShieldCheck />} title="No staff accounts yet" body="Add staff on the Staff page, then grant permissions here." /> : (
+          <div className="table-wrap">
+            <table className="table perm-table">
+              <thead>
+                <tr>
+                  <th style={{ minWidth: 240 }}>Permission</th>
+                  <th className="user-col">Admin<small>Full access</small></th>
+                  {staffUsers.map((u) => (
+                    <th key={u.id} className="user-col">
+                      {u.full_name.split(' ')[0]}
+                      <small>{u.designation}</small>
+                      <label className="check" style={{ justifyContent: 'center', marginTop: 6 }}>
+                        <input type="checkbox" aria-label={`Select all permissions for ${u.full_name}`} disabled={u.status === 'Disabled'} checked={selectable.every((key) => draft[u.id]?.has(key))}
+                          ref={(node) => { if (node) node.indeterminate = selectable.some((key) => draft[u.id]?.has(key)) && !selectable.every((key) => draft[u.id]?.has(key)); }}
+                          onChange={(e) => setDraft((d) => ({ ...d, [u.id]: new Set(e.target.checked ? selectable : []) }))} /> Select all
+                      </label>
+                    </th>
                   ))}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                </tr>
+              </thead>
+              <tbody>
+                {PERMISSIONS.map((g) => (
+                  <Fragment key={g.group}>
+                    <tr className="perm-group"><td colSpan={2 + staffUsers.length}>{g.group === 'Admin only' && <Lock size={12} style={{ verticalAlign: -1, marginRight: 6 }} />}{g.group}</td></tr>
+                    {g.items.map(([key, label]) => (
+                      <tr key={key}>
+                        <td className="perm-name">{label}<code>{key}</code></td>
+                        <td className="ta-c"><CheckCircle2 size={18} style={{ color: 'var(--success-500)' }} /></td>
+                        {staffUsers.map((u) => (
+                          <td key={u.id} className="ta-c">
+                            {ADMIN_ONLY.has(key) ? <span className="lock-note" title="Admin only" style={{ justifyContent: 'center' }}><Lock /></span>
+                              : <Switch on={!!draft[u.id]?.has(key)} onChange={() => toggle(u.id, key)} label={`${label} for ${u.full_name}`} disabled={u.status === 'Disabled'} />}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
-      {changes > 0 && (
+      {changed.length > 0 && (
         <div className="savebar">
-          <span>
-            <strong>{changes}</strong> unsaved permission change{changes > 1 ? 's' : ''} · applied on the user’s next action
-          </span>
+          <span><strong>{changed.length}</strong> staff with unsaved permission changes · applied on their next action</span>
           <div className="row">
-            <button className="btn btn-secondary btn-sm" onClick={() => setDraft(Object.fromEntries(Object.entries(staffPerms).map(([k, v]) => [k, new Set(v)])))}>
-              Discard
-            </button>
-            <button
-              className="btn btn-accent btn-sm"
-              onClick={() => {
-                for (const member of staffUsers) {
-                  const before = staffPerms[member.id] ?? new Set<string>();
-                  const after = draft[member.id] ?? new Set<string>();
-                  const changed = selectable.filter((key) => before.has(key) !== after.has(key));
-                  if (changed.length) db.audit.unshift({ id: `PM${Date.now()}${member.id}`, at: new Date(), actor: user.id, action: 'PERMISSION_CHANGED', entity: 'Staff', entityId: member.id, summary: `${member.name}: ${changed.join(', ')}`, ip: 'demo', before: Object.fromEntries(changed.map((key) => [key, before.has(key) ? 'Allowed' : 'Denied'])), after: Object.fromEntries(changed.map((key) => [key, after.has(key) ? 'Allowed' : 'Denied'])) });
-                }
-                setStaffPerms(Object.fromEntries(Object.entries(draft).map(([k, v]) => [k, new Set(v)])));
-                touch();
-                toast('success', 'Permissions saved', `${changes} change${changes > 1 ? 's' : ''} recorded in the audit log`);
-              }}
-            >
-              Save changes
-            </button>
+            <button className="btn btn-secondary btn-sm" onClick={() => setDraft(Object.fromEntries(Object.entries(saved).map(([k, v]) => [k, new Set(v)])))}>Discard</button>
+            <button className="btn btn-accent btn-sm" disabled={busy} onClick={save}>{busy && <span className="spinner" />}Save changes</button>
           </div>
         </div>
       )}
@@ -275,106 +252,52 @@ export function Permissions() {
 
 /* ------------------------------ Audit (UX-025) ------------------------------ */
 
+interface AuditRow { id: number; at: string; actor: Ref; category: string; action: string; entity_type: string; entity_id: string | null; summary: string | null; reason: string | null; before: Record<string, unknown> | null; after: Record<string, unknown> | null; ip_address: string | null }
+
 export function Audit() {
-  useStore();
   const [q, setQ] = useState('');
   const [kind, setKind] = useState<'all' | 'money' | 'deleted' | 'security'>('all');
-  const [open, setOpen] = useState<string | null>(null);
-  const rows = db.audit.filter((a) => {
-    if (kind === 'money' && !/PAYMENT|BILL|EXPENSE/.test(a.action)) return false;
-    if (kind === 'deleted' && !/DELETED|REVERSED|CANCELLED/.test(a.action)) return false;
-    if (kind === 'security' && !/LOGIN|PERMISSION|PASSWORD|BACKUP/.test(a.action)) return false;
-    const s = q.toLowerCase();
-    return !s || a.summary.toLowerCase().includes(s) || a.entityId.toLowerCase().includes(s) || (db.staffById(a.actor)?.name ?? '').toLowerCase().includes(s);
-  });
-  const pg = usePaged(rows, 15);
-  const tone = (a: string) => (/DELETED|REVERSED|CANCELLED|FAILED/.test(a) ? 'danger' : /PAYMENT|PAID/.test(a) ? 'success' : /PERMISSION|RATE|LOGIN/.test(a) ? 'hold' : 'neutral');
+  const [open, setOpen] = useState<number | null>(null);
+  const dq = useDebounced(q);
+  const [page, setPage] = usePage([dq, kind]);
+  const { data, error, loading, reload } = useQuery<Page<AuditRow>>('/audit', { q: dq, category: kind, page, page_size: 15 });
+  const tone = (a: string) => (/DELETED|REVERSED|CANCELLED|FAILED|ARCHIVED|LOCKED/.test(a) ? 'danger' : /PAYMENT|PAID/.test(a) ? 'success' : /PERMISSION|RATE|LOGIN|AADHAAR/.test(a) ? 'hold' : 'neutral');
+  const show = (o: Record<string, unknown> | null) => (o ? Object.entries(o).map(([k, v]) => <div key={k}>{k}: {typeof v === 'object' ? JSON.stringify(v) : String(v)}</div>) : '—');
 
   return (
     <>
-      <PageHeader
-        title="Audit & deleted history"
-        sub="Append-only log of who changed what and when. Entries can’t be edited or removed."
-        crumbs={[['Administration'], ['Audit log']]}
-        actions={
-          <button className="btn btn-secondary">
-            <Download /> Export
-          </button>
-        }
-      />
+      <PageHeader title="Audit & deleted history" sub="Append-only log of who changed what and when. Entries can’t be edited or removed." crumbs={[['Administration'], ['Audit log']]} />
       <section className="panel">
         <div className="table-toolbar">
-          <div className="input-group">
-            <Search />
-            <input className="input" placeholder="Search action, record or staff…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search audit log" />
-          </div>
-          <Segmented
-            value={kind}
-            onChange={setKind}
-            options={[
-              { value: 'all', label: 'All' },
-              { value: 'money', label: 'Financial' },
-              { value: 'deleted', label: 'Deleted & cancelled' },
-              { value: 'security', label: 'Security' },
-            ]}
-          />
+          <div className="input-group"><Search /><input className="input" placeholder="Search action, record or details…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search audit log" /></div>
+          <Segmented value={kind} onChange={setKind} options={[{ value: 'all', label: 'All' }, { value: 'money', label: 'Financial' }, { value: 'deleted', label: 'Deleted & cancelled' }, { value: 'security', label: 'Security' }]} />
         </div>
-        {rows.length === 0 ? (
-          <Empty icon={<ListChecks />} title="No entries found" />
-        ) : (
+        {error ? <LoadError error={error} retry={reload} /> : loading ? <SkeletonRows rows={8} cols={5} /> : data!.items.length === 0 ? <Empty icon={<ListChecks />} title="No entries found" /> : (
           <>
             <div className="table-wrap">
               <table className="table">
-                <thead>
-                  <tr>
-                    <th style={{ width: 28 }} />
-                    <th>When</th>
-                    <th>Staff</th>
-                    <th>Action</th>
-                    <th>Record</th>
-                    <th>Details</th>
-                    <th>IP</th>
-                  </tr>
-                </thead>
+                <thead><tr><th style={{ width: 28 }} /><th>When</th><th>Staff</th><th>Action</th><th>Record</th><th>Details</th><th>IP</th></tr></thead>
                 <tbody>
-                  {pg.slice.map((a) => {
-                    const has = !!(a.before || a.after);
+                  {data!.items.map((a) => {
+                    const has = !!(a.before || a.after || a.reason);
                     const isOpen = open === a.id;
                     return (
                       <Fragment key={a.id}>
                         <tr className={has ? 'is-clickable' : ''} onClick={() => has && setOpen(isOpen ? null : a.id)}>
                           <td>{has && (isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />)}</td>
-                          <td>
-                            {dateTime(a.at)}
-                            <div className="muted" style={{ fontSize: 11.5 }}>{ago(a.at)}</div>
-                          </td>
-                          <td>{db.staffById(a.actor)?.name ?? 'System'}</td>
-                          <td>
-                            <span className={`badge badge--${tone(a.action)}`} style={{ fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 11 }}>
-                              {a.action}
-                            </span>
-                          </td>
-                          <td>
-                            <span className="muted" style={{ fontSize: 12 }}>{a.entity}</span>
-                            <div className="id">{a.entityId}</div>
-                          </td>
+                          <td>{dateTime(a.at)}<div className="muted" style={{ fontSize: 11.5 }}>{ago(a.at)}</div></td>
+                          <td>{a.actor.name}</td>
+                          <td><span className={`badge badge--${tone(a.action)}`} style={{ fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 11 }}>{a.action}</span></td>
+                          <td><span className="muted" style={{ fontSize: 12 }}>{a.entity_type}</span><div className="id">{a.entity_id}</div></td>
                           <td style={{ whiteSpace: 'normal', minWidth: 220 }}>{a.summary}</td>
-                          <td className="id">{a.ip}</td>
+                          <td className="id">{a.ip_address}</td>
                         </tr>
                         {isOpen && (
                           <tr>
                             <td />
                             <td colSpan={6} style={{ whiteSpace: 'normal', background: 'var(--surface-2)' }}>
-                              <div className="diff">
-                                <div className="before">
-                                  <b>Before</b>
-                                  {a.before ? Object.entries(a.before).map(([k, v]) => <div key={k}>{k}: {v}</div>) : '—'}
-                                </div>
-                                <div className="after">
-                                  <b>After</b>
-                                  {a.after ? Object.entries(a.after).map(([k, v]) => <div key={k}>{k}: {v}</div>) : '—'}
-                                </div>
-                              </div>
+                              {a.reason && <p style={{ margin: '0 0 8px' }}><strong>Reason:</strong> {a.reason}</p>}
+                              <div className="diff"><div className="before"><b>Before</b>{show(a.before)}</div><div className="after"><b>After</b>{show(a.after)}</div></div>
                             </td>
                           </tr>
                         )}
@@ -384,7 +307,7 @@ export function Audit() {
                 </tbody>
               </table>
             </div>
-            <Pagination {...pg} noun="entries" />
+            <Pagination {...pager(data, setPage)} noun="entries" />
           </>
         )}
       </section>
@@ -394,108 +317,28 @@ export function Audit() {
 
 /* ------------------------------ Backup (UX-026) ------------------------------ */
 
+interface BackupRow { id: number; started_at: string; finished_at: string | null; status: string; size_bytes: number | null; created_by: Ref | null; error: string | null }
+
 export function Backup() {
-  useStore();
-  const last = db.backups.find((b) => b.status === 'Success')!;
+  const { data, error } = useQuery<Page<BackupRow>>('/backups');
   return (
     <>
-      <PageHeader
-        title="Backup & restore"
-        sub="Backup history below is sample data. Connect the FastAPI/MySQL backend to enable scheduled and manual backups."
-        crumbs={[['Administration'], ['Backup']]}
-        actions={
-          <button
-            className="btn btn-primary"
-            disabled
-          >
-            <CloudUpload /> Backup unavailable
-          </button>
-        }
-      />
-      <div className="dash-grid" style={{ marginTop: 0, marginBottom: 18 }}>
-        <Panel>
-          <div className="backup-hero">
-            <span className="backup-hero__ring">
-              <ShieldCheck />
-            </span>
-            <div style={{ flex: 1 }}>
-              <h2 style={{ fontSize: 18 }}>Sample backup status</h2>
-              <p className="muted" style={{ fontSize: 13.5 }}>
-                Sample entry {ago(last.at)} · {dateTime(last.at)} · {last.size}
-              </p>
-            </div>
-          </div>
-          <div className="mini-stats" style={{ marginTop: 18 }}>
-            <div>
-              <span>Schedule</span>
-              <strong style={{ fontSize: 14 }}>Not configured</strong>
-            </div>
-            <div>
-              <span>Retention</span>
-              <strong style={{ fontSize: 14 }}>Not configured</strong>
-            </div>
-            <div>
-              <span>Last restore test</span>
-              <strong style={{ fontSize: 14 }}>Not available</strong>
-            </div>
-          </div>
-        </Panel>
-        <section className="panel danger-zone">
-          <div className="panel__head">
-            <h2 style={{ color: 'var(--danger-700)' }}>
-              <AlertTriangle /> Restore
-            </h2>
-          </div>
-          <div className="panel__body">
-            <p style={{ fontSize: 13.5, color: 'var(--ink-2)' }}>Restore requires a protected server operation and is unavailable in this frontend demo.</p>
-          </div>
-        </section>
-      </div>
+      <PageHeader title="Backup & restore" sub="Backups run on the database server. Destination, encryption, schedule and retention are set by the database administrator." crumbs={[['Administration'], ['Backup']]} />
+      <div className="callout info" style={{ marginBottom: 16 }}><Database /> <span>Manual backup and restore from this screen are switched off until the backup policy is approved; nothing here pretends to run one.</span></div>
       <section className="panel">
-        <div className="panel__head">
-          <h2>
-            <Database /> Sample backup history
-          </h2>
-        </div>
-        <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Date & time</th>
-                <th>Type</th>
-                <th>Size</th>
-                <th>Status</th>
-                <th>Verified</th>
-                <th className="ta-r" />
-              </tr>
-            </thead>
-            <tbody>
-              {db.backups.map((b) => (
-                <tr key={b.id}>
-                  <td>{dateTime(b.at)}</td>
-                  <td>
-                    <span className="tag">{b.type}</span>
-                  </td>
-                  <td className="num">{b.size}</td>
-                  <td>{b.status === 'Success' ? <Badge tone="success" icon={<CheckCircle2 />}>Success</Badge> : <Badge tone="danger" icon={<XCircle />}>Failed — disk full, retried</Badge>}</td>
-                  <td>{b.verified ? <Badge tone="primary" dot>Restore-tested</Badge> : <span className="muted">Checksum OK</span>}</td>
-                  <td className="ta-r">
-                    {b.status === 'Success' && (
-                      <div className="actions">
-                        <button className="btn btn-ghost btn-sm" disabled>
-                          <Download /> Download
-                        </button>
-                        <button className="btn btn-danger-soft btn-sm" disabled>
-                          <RotateCcw /> Restore
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <div className="panel__head"><h2><Database /> Backup history</h2></div>
+        {error ? <LoadError error={error} /> : !data ? <SkeletonRows rows={3} cols={4} /> : data.items.length === 0 ? <Empty icon={<Database />} title="No backups recorded yet" /> : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead><tr><th>Started</th><th>Finished</th><th>Status</th><th>Size</th><th>By</th></tr></thead>
+              <tbody>
+                {data.items.map((b) => (
+                  <tr key={b.id}><td>{dateTime(b.started_at)}</td><td>{b.finished_at ? dateTime(b.finished_at) : '—'}</td><td><StatusDot s={b.status} /></td><td className="num">{b.size_bytes ? `${(b.size_bytes / 1048576).toFixed(1)} MB` : '—'}</td><td>{b.created_by?.name ?? 'System'}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
     </>
   );
@@ -504,135 +347,114 @@ export function Backup() {
 /* ------------------------------ Settings (UX-027) ------------------------------ */
 
 export function Settings() {
-  const { toast, user } = useApp();
+  const { toast } = useApp();
   const [sec, setSec] = useState<'identity' | 'numbering' | 'categories'>('identity');
-  const [f, setF] = useState({ ...institute });
-  const [cats, setCats] = useState([...db.expenseCategories]);
+  const { data, error, reload } = useQuery<SettingsT>('/settings');
+  const { data: cats } = useQuery<ExpenseCategory[]>('/expense-categories');
+  const [inst, setInst] = useState<SettingsT['institute'] | null>(null);
+  const [rec, setRec] = useState<SettingsT['receipts'] | null>(null);
   const [newCat, setNewCat] = useState('');
-  const year = db.TODAY.getFullYear();
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (data) {
+      setInst(data.institute);
+      setRec(data.receipts);
+    }
+  }, [data]);
+  if (error) return <LoadError error={error} retry={reload} />;
+  if (!inst || !rec) return <SkeletonRows rows={6} cols={2} />;
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      if (sec === 'identity') await write(api('/settings/institute', { method: 'PATCH', body: { name: inst.name, tagline: inst.tagline, address: inst.address, phone: inst.phone, email: inst.email } }));
+      else await write(api('/settings/receipts', { method: 'PATCH', body: { fee_receipt_prefix: rec.fee_receipt_prefix, service_bill_prefix: rec.service_bill_prefix, receipt_heading: rec.receipt_heading, receipt_footer: rec.receipt_footer, service_bill_footer: rec.service_bill_footer, service_bill_account_note: rec.service_bill_account_note } }));
+      toast('success', 'Settings saved', 'Changes recorded in the audit log');
+    } catch (e) {
+      toast('error', errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const addCat = async () => {
+    try {
+      await write(api('/expense-categories', { method: 'POST', body: { name: newCat } }));
+      toast('success', 'Category added', newCat.trim());
+      setNewCat('');
+    } catch (e) {
+      toast('error', errText(e));
+    }
+  };
+  const setI = (k: keyof SettingsT['institute'], v: string) => setInst({ ...inst, [k]: v });
+  const setR = (k: keyof SettingsT['receipts'], v: string) => setRec({ ...rec, [k]: v });
+
   return (
     <>
       <PageHeader title="Settings" sub="Approved configuration only — changes are audited." crumbs={[['Administration'], ['Settings']]} />
       <div className="two-col" style={{ gridTemplateColumns: '240px minmax(0,1fr)' }}>
         <section className="panel" style={{ padding: 8 }}>
           <nav className="settings-nav">
-            <button className={sec === 'identity' ? 'is-active' : ''} onClick={() => setSec('identity')}>
-              <Building2 /> Institute details
-            </button>
-            <button className={sec === 'numbering' ? 'is-active' : ''} onClick={() => setSec('numbering')}>
-              <Receipt /> Receipts & bills
-            </button>
-            <button className={sec === 'categories' ? 'is-active' : ''} onClick={() => setSec('categories')}>
-              <Tags /> Expense categories
-            </button>
+            <button className={sec === 'identity' ? 'is-active' : ''} onClick={() => setSec('identity')}><Building2 /> Institute details</button>
+            <button className={sec === 'numbering' ? 'is-active' : ''} onClick={() => setSec('numbering')}><Receipt /> Receipts & bills</button>
+            <button className={sec === 'categories' ? 'is-active' : ''} onClick={() => setSec('categories')}><Tags /> Expense categories</button>
           </nav>
         </section>
         <section className="panel">
           {sec === 'identity' && (
             <>
-              <div className="panel__head">
-                <div>
-                  <h2>Institute details</h2>
-                  <p>Printed on every receipt and bill</p>
-                </div>
-              </div>
+              <div className="panel__head"><div><h2>Institute details</h2><p>Printed on every new receipt and bill</p></div></div>
               <div className="panel__body">
                 <div className="form-grid">
-                  <Field label="Institute name" required htmlFor="in">
-                    <input id="in" className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
-                  </Field>
-                  <Field label="Tagline" htmlFor="it">
-                    <input id="it" className="input" value={f.tagline} onChange={(e) => setF({ ...f, tagline: e.target.value })} />
-                  </Field>
-                  <Field label="Address" required className="span-2" htmlFor="ia">
-                    <textarea id="ia" className="textarea" rows={2} value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} />
-                  </Field>
-                  <Field label="Phone" required htmlFor="ip">
-                    <input id="ip" className="input" value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} />
-                  </Field>
-                  <Field label="Email" htmlFor="ie">
-                    <input id="ie" className="input" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
-                  </Field>
+                  <Field label="Institute name" required htmlFor="in"><input id="in" className="input" value={inst.name ?? ''} onChange={(e) => setI('name', e.target.value)} /></Field>
+                  <Field label="Tagline" htmlFor="it"><input id="it" className="input" value={inst.tagline ?? ''} onChange={(e) => setI('tagline', e.target.value)} /></Field>
+                  <Field label="Address" required className="span-2" htmlFor="ia"><textarea id="ia" className="textarea" rows={2} value={inst.address ?? ''} onChange={(e) => setI('address', e.target.value)} /></Field>
+                  <Field label="Phone" required htmlFor="ip"><input id="ip" className="input" value={inst.phone ?? ''} onChange={(e) => setI('phone', e.target.value)} /></Field>
+                  <Field label="Email" htmlFor="ie"><input id="ie" className="input" value={inst.email ?? ''} onChange={(e) => setI('email', e.target.value)} /></Field>
                 </div>
               </div>
             </>
           )}
           {sec === 'numbering' && (
             <>
-              <div className="panel__head">
-                <div>
-                  <h2>Receipts & bills</h2>
-                  <p>Preview numbering for this demo session</p>
-                </div>
-              </div>
+              <div className="panel__head"><div><h2>Receipts & bills</h2><p>New prefixes apply to the next number only; issued receipts and bills keep theirs</p></div></div>
               <div className="panel__body">
                 <div className="form-grid">
-                  <Field label="Fee receipt prefix" htmlFor="rp">
-                    <input id="rp" className="input" value={f.receiptPrefix} onChange={(e) => setF({ ...f, receiptPrefix: e.target.value.toUpperCase() })} maxLength={6} />
-                  </Field>
-                  <Field label="Next receipt preview">
-                    <div className="prefix-preview">{f.receiptPrefix}-{year}-0{1201 + db.payments.length}</div>
-                  </Field>
-                  <Field label="Service bill prefix" htmlFor="bp">
-                    <input id="bp" className="input" value={f.billPrefix} onChange={(e) => setF({ ...f, billPrefix: e.target.value.toUpperCase() })} maxLength={6} />
-                  </Field>
-                  <Field label="Next bill preview">
-                    <div className="prefix-preview">{f.billPrefix}-{year}-0{301 + db.bills.length}</div>
-                  </Field>
-                  <Field label="Receipt footer note" className="span-2" htmlFor="rf">
-                    <textarea id="rf" className="textarea" value={f.receiptFooter} onChange={(e) => setF({ ...f, receiptFooter: e.target.value })} />
-                  </Field>
-                  <Field label="Receipt heading" className="span-2" htmlFor="rh"><input id="rh" className="input" value={f.receiptHeading} onChange={(e) => setF({ ...f, receiptHeading: e.target.value })} /></Field>
-                  <Field label="Bill footer note" className="span-2" htmlFor="bf">
-                    <textarea id="bf" className="textarea" value={f.billFooter} onChange={(e) => setF({ ...f, billFooter: e.target.value })} />
-                  </Field>
-                  <Field label="Service bill account note" className="span-2" hint="Describe how to obtain a login ID or set a password. Never enter an actual password." htmlFor="ban"><textarea id="ban" className="textarea" value={f.billAccountNote} onChange={(e) => setF({ ...f, billAccountNote: e.target.value })} /></Field>
+                  <Field label="Fee receipt prefix" htmlFor="rp" hint="A–Z and 0–9, up to 6"><input id="rp" className="input" value={rec.fee_receipt_prefix} onChange={(e) => setR('fee_receipt_prefix', e.target.value.toUpperCase())} maxLength={6} /></Field>
+                  <Field label="Next receipt"><div className="prefix-preview">{rec.next_receipt_preview}</div></Field>
+                  <Field label="Service bill prefix" htmlFor="bp" hint="A–Z and 0–9, up to 6"><input id="bp" className="input" value={rec.service_bill_prefix} onChange={(e) => setR('service_bill_prefix', e.target.value.toUpperCase())} maxLength={6} /></Field>
+                  <Field label="Next bill"><div className="prefix-preview">{rec.next_bill_preview}</div></Field>
+                  <Field label="Receipt heading" className="span-2" htmlFor="rh"><input id="rh" className="input" value={rec.receipt_heading ?? ''} onChange={(e) => setR('receipt_heading', e.target.value)} /></Field>
+                  <Field label="Receipt footer note" className="span-2" htmlFor="rf"><textarea id="rf" className="textarea" value={rec.receipt_footer ?? ''} onChange={(e) => setR('receipt_footer', e.target.value)} /></Field>
+                  <Field label="Bill footer note" className="span-2" htmlFor="bf"><textarea id="bf" className="textarea" value={rec.service_bill_footer ?? ''} onChange={(e) => setR('service_bill_footer', e.target.value)} /></Field>
                 </div>
               </div>
             </>
           )}
           {sec === 'categories' && (
             <>
-              <div className="panel__head">
-                <div>
-                  <h2>Expense categories</h2>
-                  <p>Used when adding expenses and in the P&L breakdown</p>
-                </div>
-              </div>
+              <div className="panel__head"><div><h2>Expense categories</h2><p>Used when adding expenses and in the P&L breakdown. Categories in use can be deactivated, not deleted.</p></div></div>
               <div className="panel__body">
                 <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-                  {cats.map((c) => (
-                    <span className="chip" key={c}>
-                      <FileText /> {c}
-                    </span>
+                  {cats?.map((c) => (
+                    <button key={c.id} className="chip" style={!c.is_active ? { opacity: 0.55 } : undefined} title={c.is_active ? 'Click to deactivate' : 'Click to activate'}
+                      onClick={() => write(api(`/expense-categories/${c.id}`, { method: 'PATCH', body: { is_active: !c.is_active } })).catch((e) => toast('error', errText(e)))}>
+                      <FileText /> {c.name}{!c.is_active && ' (inactive)'}
+                    </button>
                   ))}
                 </div>
                 <div className="row" style={{ maxWidth: 420 }}>
-                  <input className="input" placeholder="New category" value={newCat} onChange={(e) => setNewCat(e.target.value)} aria-label="New category" />
-                  <button className="btn btn-secondary" onClick={() => { if (newCat.trim()) { setCats([...cats, newCat.trim()]); setNewCat(''); } }}>
-                    <Plus /> Add
-                  </button>
+                  <input className="input" placeholder="New category" value={newCat} onChange={(e) => setNewCat(e.target.value)} aria-label="New category" onKeyDown={(e) => e.key === 'Enter' && newCat.trim() && addCat()} />
+                  <button className="btn btn-secondary" disabled={!newCat.trim()} onClick={addCat}><Plus /> Add</button>
                 </div>
               </div>
             </>
           )}
-          <div className="panel__foot" style={{ justifyContent: 'flex-end' }}>
-            <button className="btn btn-secondary" onClick={() => { setF({ ...institute }); setCats([...db.expenseCategories]); }}>
-              Reset
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={() => {
-                saveInstituteSettings(f);
-                db.expenseCategories.splice(0, db.expenseCategories.length, ...cats);
-                db.audit.unshift({ id: `SET${Date.now()}`, at: new Date(), actor: user.id, action: 'SETTINGS_UPDATED', entity: 'Settings', entityId: 'INSTITUTE', summary: 'Institute, receipt, or expense settings saved', ip: 'demo' });
-                touch();
-                toast('success', 'Settings saved', 'Changes recorded in the audit log');
-              }}
-            >
-              Save settings
-            </button>
-          </div>
+          {sec !== 'categories' && (
+            <div className="panel__foot" style={{ justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => { setInst(data!.institute); setRec(data!.receipts); }}>Reset</button>
+              <button className="btn btn-primary" disabled={busy} onClick={save}>{busy && <span className="spinner" />}Save settings</button>
+            </div>
+          )}
         </section>
       </div>
     </>

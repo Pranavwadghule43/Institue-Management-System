@@ -96,9 +96,11 @@ def jobs_payload(db: Session, jobs: list[ServiceJob]) -> list[dict]:
 @router.get("")
 def list_jobs(q: str | None = None, status: Literal["Pending", "In Process", "On Hold", "Completed", "Cancelled"] | None = None,
               staff_id: int | None = None, assigned_to_me: bool = False, overdue: bool = False, customer_code: str | None = None,
-              p: Paging = Depends(paging), db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_jobs.view"))):
-
+              billable: bool = False, p: Paging = Depends(paging), db: Session = Depends(get_db),
+              user: CurrentUser = Depends(require("service_jobs.view"))):
     stmt = select(ServiceJob).join(Customer, Customer.id == ServiceJob.customer_id)
+    if billable:  # bill desk picker: not cancelled and no current (non-cancelled) bill
+        stmt = stmt.where(ServiceJob.status != "Cancelled", ~exists().where(ServiceBill.job_id == ServiceJob.id, ServiceBill.status != "Cancelled"))
     if q:
         svc = exists().where(ServiceJobItem.job_id == ServiceJob.id, ServiceJobItem.service_id == Service.id, Service.name.ilike(like(q)))
         stmt = stmt.where(or_(ServiceJob.job_code.ilike(like(q)), Customer.full_name.ilike(like(q)), ServiceJob.application_name.ilike(like(q)), svc))

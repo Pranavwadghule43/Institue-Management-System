@@ -1,4 +1,4 @@
-import type { PayMode } from '../data/types';
+import type { PayMode } from '../api/types';
 
 /* BR-005: GPay / PhonePe are recorded as their own modes (no payment API).
    Whether reports group them under UPI is still open (17_GAP_ANALYSIS) — kept separate here. */

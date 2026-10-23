@@ -8,14 +8,14 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from ..common import (
-    PAY_LABEL, PAY_MODES, ZERO, In, OptStr, OptText, Paging, PayMode, PositiveMoney, Reason, amount_in_words, audit, bounds,
+    PAY_LABEL, PAY_MODES, ZERO, In, OptStr, OptText, Paging, PayMode, PositiveMoney, Reason, add_months_clamped, amount_in_words, audit, bounds,
     institute, like, money, next_code, now, paginate, paging, today, user_names, user_ref,
 )
 from ..db import get_db
 from ..errors import bad, conflict, not_found
 from ..ledger import fee_cols, fee_summary, reallocate
 from ..models import FeeReceipt, FeeReminderEvent, Student, StudentInstallment, StudentPayment as P
-from ..security import CurrentUser, require, require_admin
+from ..security import CurrentUser, require, require_admin, require_any
 from .academics import fmt_time
 
 router = APIRouter(tags=["student finance"])
@@ -61,10 +61,16 @@ def _issue_receipt(db: Session, s: Student, p: P, user: CurrentUser, previous: D
     balance = s.net_fee - total
     next_date = "NIL" if balance <= 0 else summary["next_due"]["due_date"].isoformat() if summary["next_due"] else "Schedule needed"
     slot = s.time_slot
+    months = int(s.course.duration) if (s.course.duration or "").isdigit() else None
     snapshot = {
         "receipt_no": code, "issued_at": p.received_at.isoformat(),
         "student": {"code": s.student_code, "name": s.full_name, "guardian": s.guardian_name, "mobile": s.mobile},
         "course": {"code": s.course.code, "name": s.course.name}, "course_subtype": s.subtype.name if s.subtype else None,
+        # printed on the paper template: joining date, the 8 installment boxes, course expiry (admission + course duration)
+        "joining_date": s.admission_date.isoformat(),
+        "course_expiry_date": add_months_clamped(s.admission_date, months).isoformat() if months else None,
+        "installments": [{"no": x["no"], "due_date": x["due_date"].isoformat(), "amount": x["amount"]} for x in summary["schedule"] if x["no"] > 0],
+        "total_course_fee": money(s.net_fee),
         "time_slot": {"name": slot.name, "timing": f"{fmt_time(slot.start_time)} – {fmt_time(slot.end_time)}", "days": slot.days_of_week},
         "payment": {"amount": money(p.amount), "mode": p.payment_mode, "mode_label": PAY_LABEL[p.payment_mode],
                     "reference": p.payment_reference, "remarks": p.remarks, "collected_by": user.full_name},
@@ -145,7 +151,7 @@ def _payments_query(q, mode, status, student_code, date_from, date_to):
 @router.get("/fees/payments")
 def list_payments(q: str | None = None, mode: PayMode | None = None, status: Literal["Valid", "Reversed"] | None = None,
                   student_code: str | None = None, date_from: date | None = None, date_to: date | None = None,
-                  p: Paging = Depends(paging), db: Session = Depends(get_db), _: CurrentUser = Depends(require("fees.view"))):
+                  p: Paging = Depends(paging), db: Session = Depends(get_db), _: CurrentUser = Depends(require_any("fees.view", "receipts.view_print"))):
     stmt = _payments_query(q, mode, status, student_code, date_from, date_to)
     sq = stmt.where(P.status == "Valid").with_only_columns(P.payment_mode, func.sum(P.amount), func.count()).group_by(P.payment_mode)
     by_mode = {m: (ZERO, 0) for m in PAY_MODES} | {m: (a, c) for m, a, c in db.execute(sq)}
@@ -193,7 +199,7 @@ def reverse_payment(payment_id: int, body: ReverseIn, db: Session = Depends(get_
 
 def receipt_out(r: FeeReceipt, p: P) -> dict:
     """The issued snapshot is returned as-is; only the reversal status is live."""
-    return {"receipt_no": r.receipt_code, "issued_at": r.issued_at, "status": p.status, "reversed_at": p.reversed_at,
+    return {"receipt_no": r.receipt_code, "payment_id": p.id, "issued_at": r.issued_at, "status": p.status, "reversed_at": p.reversed_at,
             "reversal_reason": p.reversal_reason, "next_payment_date": r.next_payment_date_snapshot, "snapshot": r.snapshot}
 
 

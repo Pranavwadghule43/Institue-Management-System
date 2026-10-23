@@ -1,17 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Download, Eye, IndianRupee, MessageCircle, Pencil, Printer, RotateCcw, Search, SearchX, Trash2, UserPlus, Users } from 'lucide-react';
-import { useApp } from '../../app/AppContext';
+import { Download, Eye, IndianRupee, MessageCircle, Pencil, RotateCcw, SearchX, Trash2, UserPlus, Users, Search } from 'lucide-react';
+import { errText, useApp } from '../../app/AppContext';
 import {
-  Confirm, Empty, FeeStateBadge, Menu, PageHeader, Pagination, Person, Progress, SkeletonRows, StatusDot, useDebounced, useLoading, usePaged,
+  Confirm, Empty, FeeStateBadge, Field, LoadError, Menu, PageHeader, Pagination, Person, Progress, SkeletonRows, StatusDot, pager, useDebounced, usePage,
 } from '../../components/ui';
-import { balanceFor, db, feeState, netFee, nextDue, paidFor, studentPayments, useStore } from '../../data/store';
-import { date, money, pct } from '../../lib/format';
+import { api, download, useQuery, write, type Page } from '../../api/client';
+import type { Course, StudentRow, TimeSlot } from '../../api/types';
+import { date, money, n } from '../../lib/format';
 import { feeReminderText, waLink } from '../../lib/whatsapp';
-import type { Student } from '../../data/types';
 
 export default function StudentList() {
-  useStore();
   const { can, toast } = useApp();
   const nav = useNavigate();
   const [params] = useSearchParams();
@@ -20,21 +19,14 @@ export default function StudentList() {
   const [batch, setBatch] = useState(params.get('batch') ?? '');
   const [status, setStatus] = useState(params.get('status') ?? '');
   const [fee, setFee] = useState('');
-  const [del, setDel] = useState<Student | null>(null);
+  const [del, setDel] = useState<StudentRow | null>(null);
+  const [reason, setReason] = useState('');
   const dq = useDebounced(q);
-  const loading = useLoading(500);
-
-  const rows = useMemo(() => {
-    const s = dq.trim().toLowerCase();
-    return [...db.students]
-      .reverse()
-      .filter((x) => !s || x.name.toLowerCase().includes(s) || x.id.toLowerCase().includes(s) || x.phone.replace(/\s/g, '').includes(s.replace(/\s/g, '')) || x.fatherName.toLowerCase().includes(s) || (s.replace(/\s/g, '').length >= 4 && /^\d+$/.test(s.replace(/\s/g, '')) && x.aadhaar.replace(/\s/g, '').includes(s.replace(/\s/g, ''))))
-      .filter((x) => !course || x.courseId === course)
-      .filter((x) => !batch || x.batchId === batch)
-      .filter((x) => !status || x.status === status)
-      .filter((x) => !fee || feeState(x) === fee || (fee === 'Pending' && feeState(x) !== 'Fully Paid'));
-  }, [dq, course, batch, status, fee, db.students.length]);
-  const pg = usePaged(rows, 12);
+  const [page, setPage] = usePage([dq, course, batch, status, fee]);
+  const { data: courses } = useQuery<Course[]>('/courses');
+  const { data: slots } = useQuery<TimeSlot[]>('/time-slots', { course_id: course });
+  const filters = { q: dq, course_id: course, time_slot_id: batch, status, fee_status: fee };
+  const { data, error, loading, reload } = useQuery<Page<StudentRow> & { counts: { total: number; active: number } }>('/students', { ...filters, page, page_size: 12 });
   const filtered = !!(q || course || batch || status || fee);
   const reset = () => {
     setQ('');
@@ -48,13 +40,15 @@ export default function StudentList() {
     <>
       <PageHeader
         title="Students"
-        sub={`${db.students.length} students · ${db.students.filter((s) => s.status === 'Active').length} active`}
+        sub={data ? `${data.counts.total} students · ${data.counts.active} active` : ' '}
         crumbs={[['Students']]}
         actions={
           <>
-            <button className="btn btn-secondary" onClick={() => toast('success', 'Export ready', `${rows.length} students exported to Excel`)}>
-              <Download /> Export
-            </button>
+            {can('reports.view') && (
+              <button className="btn btn-secondary" onClick={() => download('/reports/student-list/export.xlsx', { course_id: course, time_slot_id: batch, student_status: status, q: dq }).catch((e) => toast('error', errText(e)))}>
+                <Download /> Export
+              </button>
+            )}
             {can('students.create') && (
               <Link className="btn btn-primary" to="/enquiries/new">
                 <UserPlus /> New enquiry
@@ -68,29 +62,19 @@ export default function StudentList() {
         <div className="table-toolbar">
           <div className="input-group">
             <Search />
-            <input className="input" placeholder="Name, mobile, Aadhaar or Student ID" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search students" />
+            <input className="input" placeholder="Name, mobile, Student ID or Aadhaar (12 digits / last 4)" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search students" />
           </div>
           <select className="select" value={course} onChange={(e) => { setCourse(e.target.value); setBatch(''); }} aria-label="Course">
             <option value="">All courses</option>
-            {db.courses.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.code} — {c.name}
-              </option>
-            ))}
+            {courses?.map((c) => <option key={c.id} value={c.id}>{c.code} — {c.name}</option>)}
           </select>
           <select className="select" value={batch} onChange={(e) => setBatch(e.target.value)} aria-label="Batch">
             <option value="">All batches</option>
-            {db.batches.filter((b) => !course || b.courseId === course).map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
+            {slots?.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
           </select>
           <select className="select" value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
             <option value="">Any status</option>
-            {['Active', 'Completed', 'Left'].map((s) => (
-              <option key={s}>{s}</option>
-            ))}
+            {['Active', 'Completed', 'Left'].map((s) => <option key={s}>{s}</option>)}
           </select>
           <select className="select" value={fee} onChange={(e) => setFee(e.target.value)} aria-label="Fee status">
             <option value="">Any fee status</option>
@@ -106,13 +90,15 @@ export default function StudentList() {
           )}
         </div>
 
-        {loading ? (
+        {error ? (
+          <LoadError error={error} retry={reload} />
+        ) : loading ? (
           <SkeletonRows rows={8} cols={6} />
-        ) : rows.length === 0 ? (
+        ) : data!.items.length === 0 ? (
           filtered ? (
             <Empty icon={<SearchX />} title="No students match these filters" body="Try a different name or mobile number, or reset the filters." action={<button className="btn btn-secondary" onClick={reset}><RotateCcw /> Reset filters</button>} />
           ) : (
-            <Empty icon={<Users />} title="No students yet" body="Create an enquiry to begin the admission process." action={<Link className="btn btn-primary" to="/enquiries/new"><UserPlus /> New enquiry</Link>} />
+            <Empty icon={<Users />} title="No students yet" body="Create an enquiry to begin the admission process." action={can('students.create') ? <Link className="btn btn-primary" to="/enquiries/new"><UserPlus /> New enquiry</Link> : undefined} />
           )
         ) : (
           <>
@@ -131,53 +117,34 @@ export default function StudentList() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pg.slice.map((s) => {
-                    const paid = paidFor(s);
-                    const p = pct(paid, netFee(s));
-                    const fs = feeState(s);
-                    const bal = balanceFor(s);
+                  {data!.items.map((s) => {
+                    const bal = n(s.balance);
                     return (
-                      <tr key={s.id} className="is-clickable" onClick={() => nav(`/students/${s.id}`)}>
+                      <tr key={s.code} className="is-clickable" onClick={() => nav(`/students/${s.code}`)}>
+                        <td><Person name={s.full_name} sub={s.code} /></td>
+                        <td className="num">{s.mobile}</td>
                         <td>
-                          <Person name={s.name} sub={s.id} />
+                          <div style={{ fontWeight: 600 }}>{s.course.code}</div>
+                          <div className="muted" style={{ fontSize: 12 }}>{s.time_slot.name}</div>
                         </td>
-                        <td className="num">{s.phone}</td>
-                        <td>
-                          <div style={{ fontWeight: 600 }}>{db.courseById(s.courseId).code}</div>
-                          <div className="muted" style={{ fontSize: 12 }}>
-                            {db.batchById(s.batchId).name}
-                          </div>
-                        </td>
-                        <td>{date(s.admissionDate)}</td>
+                        <td>{date(s.admission_date)}</td>
                         <td>
                           <div className="row" style={{ gap: 8 }}>
-                            <Progress value={p} tone={fs === 'Overdue' ? 'danger' : p === 100 ? 'success' : ''} />
-                            <span className="num muted" style={{ fontSize: 12, minWidth: 32 }}>
-                              {p}%
-                            </span>
+                            <Progress value={s.paid_pct} tone={s.fee_state === 'Overdue' ? 'danger' : s.paid_pct === 100 ? 'success' : ''} />
+                            <span className="num muted" style={{ fontSize: 12, minWidth: 32 }}>{s.paid_pct}%</span>
                           </div>
-                          <div style={{ marginTop: 4 }}>
-                            <FeeStateBadge s={fs} />
-                          </div>
+                          <div style={{ marginTop: 4 }}><FeeStateBadge s={s.fee_state} /></div>
                         </td>
-                        <td className="ta-r num" style={{ fontWeight: 700, color: bal ? undefined : 'var(--ink-3)' }}>
-                          {money(bal)}
-                        </td>
-                        <td>
-                          <StatusDot s={s.status} />
-                        </td>
+                        <td className="ta-r num" style={{ fontWeight: 700, color: bal ? undefined : 'var(--ink-3)' }}>{money(bal)}</td>
+                        <td><StatusDot s={s.status} /></td>
                         <td className="ta-r" onClick={(e) => e.stopPropagation()}>
                           <div className="actions">
                             {can('fees.collect') && bal > 0 ? (
-                              <Link className="btn btn-secondary btn-sm" to={`/fees/collect?student=${s.id}`}>
-                                <IndianRupee /> Collect
-                              </Link>
+                              <Link className="btn btn-secondary btn-sm" to={`/fees/collect?student=${s.code}`}><IndianRupee /> Collect</Link>
                             ) : (
-                              <Link className="btn btn-ghost btn-sm" to={`/students/${s.id}`}>
-                                View
-                              </Link>
+                              <Link className="btn btn-ghost btn-sm" to={`/students/${s.code}`}>View</Link>
                             )}
-                            <RowMenu s={s} onDelete={() => setDel(s)} />
+                            <RowMenu s={s} onDelete={() => { setReason(''); setDel(s); }} />
                           </div>
                         </td>
                       </tr>
@@ -187,22 +154,20 @@ export default function StudentList() {
               </table>
             </div>
             <div className="card-list">
-              {pg.slice.map((s) => (
-                <Link key={s.id} to={`/students/${s.id}`} className="m-card">
+              {data!.items.map((s) => (
+                <Link key={s.code} to={`/students/${s.code}`} className="m-card">
                   <div className="m-card__row">
-                    <Person name={s.name} sub={`${s.id} · ${db.courseById(s.courseId).code}`} />
+                    <Person name={s.full_name} sub={`${s.code} · ${s.course.code}`} />
                     <StatusDot s={s.status} />
                   </div>
                   <div className="m-card__row">
-                    <FeeStateBadge s={feeState(s)} />
-                    <span className="num" style={{ fontWeight: 700 }}>
-                      {money(balanceFor(s))} due
-                    </span>
+                    <FeeStateBadge s={s.fee_state} />
+                    <span className="num" style={{ fontWeight: 700 }}>{money(s.balance)} due</span>
                   </div>
                 </Link>
               ))}
             </div>
-            <Pagination {...pg} noun="students" />
+            <Pagination {...pager(data, setPage)} noun="students" />
           </>
         )}
       </section>
@@ -212,40 +177,43 @@ export default function StudentList() {
         onClose={() => setDel(null)}
         tone="danger"
         icon={<Trash2 />}
-        title={`Delete ${del?.name}?`}
-        body="The student will be moved to Deleted History. Payments and receipts are preserved for audit and can still be reported on."
-        confirmLabel="Delete student"
-        onConfirm={() => {
-          toast('success', 'Student moved to Deleted History', `${del?.name} (${del?.id})`);
-          setDel(null);
+        title={`Archive ${del?.full_name}?`}
+        body="The student moves to Deleted History. Payments and receipts are kept for audit and reports."
+        confirmLabel="Archive student"
+        disabled={reason.trim().length < 5}
+        onConfirm={async () => {
+          try {
+            await write(api(`/students/${del!.code}/archive`, { method: 'POST', body: { reason } }));
+            toast('success', 'Student moved to Deleted History', `${del?.full_name} (${del?.code})`);
+            setDel(null);
+          } catch (e) {
+            toast('error', errText(e));
+          }
         }}
-      />
+      >
+        <Field label="Reason" required hint="Minimum 5 characters — kept in the audit log" htmlFor="arch">
+          <textarea id="arch" className="textarea" value={reason} onChange={(e) => setReason(e.target.value)} />
+        </Field>
+      </Confirm>
     </>
   );
 }
 
-function RowMenu({ s, onDelete }: { s: Student; onDelete: () => void }) {
-  const { can, toast } = useApp();
+function RowMenu({ s, onDelete }: { s: StudentRow; onDelete: () => void }) {
+  const { can } = useApp();
   const nav = useNavigate();
-  const last = studentPayments(s)[0];
-  const n = nextDue(s);
   return (
     <Menu>
-      <button className="menu__item" onClick={() => nav(`/students/${s.id}`)}>
+      <button className="menu__item" onClick={() => nav(`/students/${s.code}`)}>
         <Eye /> View profile
       </button>
       {can('students.edit') && (
-        <button className="menu__item" onClick={() => toast('info', 'Edit student', 'Opens the admission form pre-filled for editing.')}>
+        <button className="menu__item" onClick={() => nav(`/students/${s.code}?edit=1`)}>
           <Pencil /> Edit details
         </button>
       )}
-      {last && (
-        <button className="menu__item" onClick={() => nav(`/fees/receipts/${last.receiptNo}`)}>
-          <Printer /> Last receipt <span className="meta">{last.receiptNo.slice(-5)}</span>
-        </button>
-      )}
-      {n && (
-        <a className="menu__item" href={waLink(s.phone, feeReminderText(s.name, n.remaining, n.due, balanceFor(s)))} target="_blank" rel="noreferrer">
+      {s.next_due && (
+        <a className="menu__item" href={waLink(s.mobile, feeReminderText(s.full_name, s.next_due.amount, s.next_due.due_date, s.balance))} target="_blank" rel="noreferrer">
           <MessageCircle /> WhatsApp reminder
         </a>
       )}
@@ -253,7 +221,7 @@ function RowMenu({ s, onDelete }: { s: Student; onDelete: () => void }) {
         <>
           <div className="menu__sep" />
           <button className="menu__item danger" onClick={onDelete}>
-            <Trash2 /> Delete student
+            <Trash2 /> Archive student
           </button>
         </>
       )}
