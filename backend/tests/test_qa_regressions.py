@@ -88,7 +88,6 @@ def test_unlabelled_upload_is_restricted_by_default(admin, job, make_staff):
 # ----------------------------------------------------------------- QA-04 (Medium) lockout counter race
 
 
-@bug("QA-04", "failed_attempts is read-modify-written without a row lock; parallel guesses are all checked")
 def test_parallel_wrong_passwords_still_lock_after_five(client, make_staff):
     make_staff([], username="race.target")
 
@@ -100,6 +99,35 @@ def test_parallel_wrong_passwords_still_lock_after_five(client, make_staff):
     assert codes.count("INVALID_CREDENTIALS") <= 5
     r = client.post("/api/v1/auth/login", json={"username": "race.target", "password": PASSWORD})
     assert r.status_code == 429
+
+
+# ----------------------------------------------------------------- QA-16 (Low) weak passwords / QA-17 (Low) username timing
+
+
+@pytest.mark.parametrize("weak, why", [
+    ("aaaaaaaaaaaa", "Use a mix of different characters."),
+    ("short-pw1", "Use at least 10 characters."),
+    ("Password123", "This password is too common. Choose another."),
+    ("admin-is-me-2026", "Don't include your username in the password."),
+])
+def test_weak_new_passwords_are_refused(admin, weak, why):
+    r = admin.post("/auth/change-password", json={"current_password": PASSWORD, "new_password": weak})
+    assert r.status_code == 400 and r.json()["error"]["code"] == "PASSWORD_TOO_WEAK"
+    assert r.json()["error"]["field_errors"]["new_password"] == why
+
+
+def test_strong_new_password_is_accepted(admin):
+    assert admin.post("/auth/change-password", json={"current_password": PASSWORD, "new_password": "Counter-desk 7 blue"}).status_code == 204
+
+
+def test_unknown_username_still_runs_a_password_check(client, monkeypatch):
+    from app import security
+    calls = []
+    real = security.verify_password
+    monkeypatch.setattr(security, "verify_password", lambda pw, stored: calls.append(stored) or real(pw, stored))
+    r = client.post("/api/v1/auth/login", json={"username": "no.such.user", "password": "whatever-pass"})
+    assert r.status_code == 401 and r.json()["error"]["code"] == "INVALID_CREDENTIALS"
+    assert calls == [security.DUMMY_HASH]  # same scrypt work as a real account, so timing can't tell them apart
 
 
 # ----------------------------------------------------------------- QA-05 (Medium) unhandled errors lose CORS + security headers

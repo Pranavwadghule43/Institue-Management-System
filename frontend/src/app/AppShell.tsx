@@ -283,7 +283,7 @@ function ChangePassword({ open, onClose }: { open: boolean; onClose: () => void 
     }
   }, [open]);
   const save = async () => {
-    if (f.next.length < 8) return setErr('New password must be at least 8 characters.');
+    if (f.next.length < 10) return setErr('New password must be at least 10 characters.');
     if (f.next !== f.again) return setErr('New passwords don’t match.');
     setBusy(true);
     try {
@@ -304,7 +304,7 @@ function ChangePassword({ open, onClose }: { open: boolean; onClose: () => void 
         </div>
         <div>
           <h2>Change password</h2>
-          <p>At least 8 characters. Other devices will be signed out.</p>
+          <p>At least 10 characters, not your username or a common password. Other devices will be signed out.</p>
         </div>
       </div>
       <div className="modal__body stack" style={{ gap: 12 }}>

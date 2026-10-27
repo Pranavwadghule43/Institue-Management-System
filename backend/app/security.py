@@ -88,6 +88,33 @@ def verify_password(password: str, stored: str | None) -> bool:
         return False
 
 
+# Verified against when the username doesn't exist, so unknown and real usernames take the same time (QA-17).
+DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+
+# Password policy (QA-16): length + variety + not common + not the username. No forced expiry or symbol rules.
+MIN_PASSWORD_LENGTH = 10
+COMMON_PASSWORDS = frozenset({
+    "password", "password1", "password12", "password123", "password@123", "passw0rd", "p@ssw0rd", "p@ssword123", "123456789",
+    "1234567890", "12345678910", "0123456789", "9876543210", "qwertyuiop", "qwerty123", "qwerty1234", "1q2w3e4r5t", "1qaz2wsx3edc",
+    "asdfghjkl", "zxcvbnm123", "iloveyou12", "welcome123", "welcome@123", "admin12345", "admin@123", "admin@1234", "administrator",
+    "letmein123", "changeme123", "india@123", "india12345", "updaate123", "updaate@123", "update@123", "computer123", "abc1234567",
+})
+
+
+def password_problem(password: str, username: str | None = None) -> str | None:
+    """Why a new password is too weak, or None when it is acceptable."""
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"Use at least {MIN_PASSWORD_LENGTH} characters."
+    if len(set(password)) < 4:
+        return "Use a mix of different characters."
+    lowered = password.lower()
+    if lowered in COMMON_PASSWORDS:
+        return "This password is too common. Choose another."
+    if username and len(username) >= 3 and username.lower() in lowered:
+        return "Don't include your username in the password."
+    return None
+
+
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -174,7 +201,9 @@ IP_FAILURE_LIMIT = 20  # failed sign-ins per IP per lock window, across all user
 @router.post("/login")
 def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     username = body.username.lower()
-    u = db.scalars(select(User).where(User.username == username, User.deleted_at.is_(None))).first()
+    # Row lock (QA-04): parallel sign-ins for one account run one at a time, so every wrong password is counted
+    # and the 5-try lockout can't be bypassed by sending guesses simultaneously. Released at commit/rollback.
+    u = db.scalars(select(User).where(User.username == username, User.deleted_at.is_(None)).with_for_update()).first()
     ip = request.client.host if request.client else None
 
     def fail(status=401, code="INVALID_CREDENTIALS", msg="Incorrect username or password."):
@@ -187,6 +216,7 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
                                                     LoginAttempt.attempted_at > window)) or 0) >= IP_FAILURE_LIMIT:
         raise AppError(429, "TOO_MANY_ATTEMPTS", "Too many failed sign-ins from this device. Try again later.")
     if u is None or not u.is_active:
+        verify_password(body.password, DUMMY_HASH)  # same scrypt cost as a real check, so timing doesn't reveal valid usernames (QA-17)
         fail()
     if u.locked_until and u.locked_until > now():
         fail(429, "LOGIN_LOCKED", "Too many attempts. Sign-in is paused, try again later.")
@@ -227,6 +257,8 @@ def change_password(body: PasswordIn, user: CurrentUser = Depends(get_current_us
         raise AppError(400, "INVALID_CURRENT_PASSWORD", "Current password is incorrect.", {"current_password": "Current password is incorrect."})
     if body.new_password == body.current_password:
         raise AppError(400, "PASSWORD_UNCHANGED", "Choose a different password.", {"new_password": "Choose a different password."})
+    if problem := password_problem(body.new_password, u.username):
+        raise AppError(400, "PASSWORD_TOO_WEAK", problem, {"new_password": problem})
     u.password_hash = hash_password(body.new_password)
     for s in db.scalars(select(UserSession).where(UserSession.user_id == u.id, UserSession.revoked_at.is_(None), UserSession.id != user.session_id)):
         s.revoked_at = now()  # other devices are signed out; this one stays

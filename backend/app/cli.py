@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from .db import SessionLocal
 from .models import ExpenseCategory, InstituteSettings, User
 from .routers.admin import ensure_permission_catalog
-from .security import hash_password
+from .security import MIN_PASSWORD_LENGTH, hash_password, password_problem
 
 EXPENSE_CATEGORIES = ["Rent", "Salary", "Electricity", "Internet & Phone", "Stationery", "Printer & Toner", "Maintenance", "Marketing",
                       "Refreshments", "Miscellaneous", "Other"]
@@ -56,9 +56,11 @@ def main(argv: list[str]) -> None:
             seed(db)
             print("Seed complete.")
         elif argv[:1] == ["create-admin"] and len(argv) == 3:
-            pw = getpass.getpass("Admin password (min 8 chars): ")
-            if len(pw) < 8 or pw != getpass.getpass("Repeat password: "):
-                raise SystemExit("Passwords must match and be at least 8 characters.")
+            pw = getpass.getpass(f"Admin password (min {MIN_PASSWORD_LENGTH} chars): ")
+            if problem := password_problem(pw, argv[1]):
+                raise SystemExit(problem)
+            if pw != getpass.getpass("Repeat password: "):
+                raise SystemExit("Passwords must match.")
             print("Created Admin", create_admin(db, argv[1], argv[2], pw).username)
         else:
             print(__doc__)
