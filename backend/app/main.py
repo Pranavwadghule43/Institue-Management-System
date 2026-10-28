@@ -4,6 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -30,7 +31,11 @@ async def request_log(request: Request, call_next):
     rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:16]
     request_ctx.set((request.client.host if request.client else None, (request.headers.get("user-agent") or "")[:500]))
     start = time.perf_counter()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:  # QA-05: answer here so the 500 still passes through CORS and gets the headers below
+        log.exception("unhandled error rid=%s on %s %s", rid, request.method, request.url.path)
+        response = JSONResponse(errors._body("INTERNAL_ERROR", "Something went wrong. Please try again."), status_code=500)
     response.headers["X-Request-ID"] = rid
     response.headers.update(SECURITY_HEADERS)
     if request.url.path.startswith(settings.api_v1_prefix):

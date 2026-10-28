@@ -32,21 +32,24 @@ def raw(client):
 # ----------------------------------------------------------------- QA-01 (Critical) blank email crashes the API
 
 
-@bug("QA-01", "OptEmail applies max_length to None -> TypeError -> 500")
 @pytest.mark.parametrize("email", ["", None])
 def test_enquiry_with_blank_email_is_created(admin, course, email):
     r = admin.post("/enquiries", json={"student_name": "Blank Email", "mobile": "9876543210", "course_id": course["id"], "email": email})
     assert r.status_code == 201, r.text
+    assert r.json()["email"] is None
 
 
-@bug("QA-01", "Admission.tsx sends email: null when the field is empty")
+def test_invalid_email_is_still_rejected(admin, course):
+    r = admin.post("/enquiries", json={"student_name": "Bad Email", "mobile": "9876543210", "course_id": course["id"], "email": "not-an-email"})
+    assert r.status_code == 422 and "email" in r.json()["error"]["field_errors"]
+
+
 def test_admission_with_null_email_is_created(admin, course, enquiry):
     from conftest import admission_body
     r = admin.post(f"/enquiries/{enquiry['code']}/convert", json=admission_body(course, email=None))
     assert r.status_code == 201, r.text
 
 
-@bug("QA-01", "clearing a student's email returns 500")
 def test_student_email_can_be_cleared(admin, student):
     r = admin.patch(f"/students/{student['student']['code']}", json={"email": None})
     assert r.status_code == 200, r.text
@@ -133,20 +136,21 @@ def test_unknown_username_still_runs_a_password_check(client, monkeypatch):
 # ----------------------------------------------------------------- QA-05 (Medium) unhandled errors lose CORS + security headers
 
 
-@bug("QA-05", "the catch-all Exception handler runs outside CORSMiddleware; the browser shows 'Cannot reach the server'")
-def test_server_error_keeps_cors_and_security_headers(raw, admin):
-    r = raw.post("/api/v1/enquiries", json={"student_name": "X", "mobile": "9876543210", "email": ""},
-                 headers={"Authorization": f"Bearer {admin.token}", "Origin": "http://localhost:5173"})
-    if r.status_code < 500:
-        pytest.skip("needs an endpoint that still raises; QA-01 fixed - pick another 500 trigger")
+def test_server_error_keeps_cors_and_security_headers(raw, admin, course, monkeypatch):
+    from app.routers import academics
+
+    def boom(*_a, **_k):
+        raise RuntimeError("simulated failure")
+    monkeypatch.setattr(academics, "course_out", boom)  # any unexpected exception inside a route
+    r = raw.get("/api/v1/courses", headers={"Authorization": f"Bearer {admin.token}", "Origin": "http://localhost:5173"})
+    assert r.status_code == 500 and r.json()["error"]["code"] == "INTERNAL_ERROR"
     assert r.headers.get("access-control-allow-origin") == "http://localhost:5173"
-    assert r.headers.get("x-content-type-options") == "nosniff"
+    assert r.headers.get("x-content-type-options") == "nosniff" and r.headers.get("x-request-id")
 
 
 # ----------------------------------------------------------------- QA-06 (Medium) payment amounts leak via profile activity
 
 
-@bug("QA-06", "student_profile hides 'fees' without fees.view but still lists payment amounts in 'activity'")
 def test_profile_hides_payment_amounts_without_fees_view(student, make_staff):
     staff = make_staff(["students.view"])
     p = ok(staff.get(f"/students/{student['student']['code']}/profile"))

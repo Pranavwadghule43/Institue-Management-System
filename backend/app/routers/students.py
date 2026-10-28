@@ -273,6 +273,8 @@ def student_profile(code: str, db: Session = Depends(get_db), user: CurrentUser 
         + [{"at": e.opened_at, "type": "reminder", "title": "WhatsApp fee reminder opened", "by": user_ref(names, e.opened_by), "note": e.note} for e in reminders]
         + [{"at": a.created_at, "type": "change", "title": a.summary, "action": a.action, "by": user_ref(names, a.actor_id), "note": a.reason} for a in events]
     )
+    if not user.can("fees.view"):  # QA-06: no payment amounts for users who can't see fees
+        activity = [a for a in activity if a["type"] not in ("payment", "reversal")]
     activity.sort(key=lambda a: a["at"], reverse=True)
     fees = fee_summary(db, s, today()) if user.can("fees.view") else None
     last = db.scalar(select(func.max(FeeReminderEvent.opened_at)).where(FeeReminderEvent.student_id == s.id))

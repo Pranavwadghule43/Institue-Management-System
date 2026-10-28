@@ -62,7 +62,8 @@ def _email(v):
 Mobile = Annotated[str, BeforeValidator(_mobile)]
 OptMobile = Annotated[str | None, BeforeValidator(lambda v: None if _blank_none(v) is None else _mobile(v))]
 OptAadhaar = Annotated[str | None, BeforeValidator(lambda v: None if _blank_none(v) is None else _aadhaar(v))]
-OptEmail = Annotated[str | None, BeforeValidator(_blank_none), AfterValidator(lambda v: v and _email(v.strip())), StringConstraints(max_length=255)]
+# QA-01: length/format apply to the string branch only; blank or null means "no email" (was a 500 on None).
+OptEmail = Annotated[Annotated[str, StringConstraints(strip_whitespace=True, max_length=255), AfterValidator(_email)] | None, BeforeValidator(_blank_none)]
 OptText = Annotated[Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] | None, BeforeValidator(_blank_none)]
 
 
