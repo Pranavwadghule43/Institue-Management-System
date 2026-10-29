@@ -161,7 +161,6 @@ def test_profile_hides_payment_amounts_without_fees_view(student, make_staff):
 # ----------------------------------------------------------------- QA-07 (Medium) admission retry is not idempotent
 
 
-@bug("QA-07", "README promises replay for admissions; a retry with the same Idempotency-Key returns 409 ENQUIRY_ALREADY_CONVERTED")
 def test_admission_retry_with_same_key_replays(admin, course, enquiry):
     from conftest import admission_body
     h = {"Idempotency-Key": "adm-retry-1"}
@@ -187,7 +186,6 @@ def test_same_aadhaar_cannot_be_admitted_twice(admin, course):
 # ----------------------------------------------------------------- QA-09 (Medium) bill of a cancelled job can be paid
 
 
-@bug("QA-09", "pay_bill doesn't re-check the job; a job cancelled after billing can still be paid")
 def test_bill_of_cancelled_job_cannot_be_paid(admin, catalog, job):
     b = ok(admin.post("/service-bills", json={"job_code": job["code"], "items": [{"service_id": catalog["pan"]["id"], "quantity": 1}]}), 201)
     ok(admin.post(f"/service-jobs/{job['code']}/status", json={"status": "Cancelled", "reason": "Customer left"}))
@@ -220,7 +218,6 @@ def test_followups_and_student_list_carry_whatsapp_number(admin, course, enquiry
 # ----------------------------------------------------------------- QA-12 (Medium) fees.collect without fees.view
 
 
-@bug("QA-12", "Fee Collection loads /fees/students/{code}/summary which requires fees.view, so 'Collect fees' alone is unusable")
 def test_collect_permission_can_load_fee_summary(student, make_staff):
     staff = make_staff(["fees.collect", "students.view"])
     assert staff.get(f"/fees/students/{student['student']['code']}/summary").status_code == 200

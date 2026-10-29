@@ -101,7 +101,8 @@ def _receipt_code(db: Session, payment_id: int) -> str | None:
 
 
 @router.get("/fees/students/{code}/summary")
-def student_fee_summary(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(require("fees.view"))):
+def student_fee_summary(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(require_any("fees.view", "fees.collect"))):
+    # QA-12: the Fee Collection screen needs this summary, so "Collect fees" alone must be able to read it
     s = db.scalars(select(Student).where(Student.student_code == code, Student.deleted_at.is_(None))).first()
     if s is None:
         raise not_found("student")

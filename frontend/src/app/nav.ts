@@ -31,10 +31,10 @@ export const NAV: NavSection[] = [
         ],
       },
       {
-        label: 'Student Finance', icon: IndianRupee, perm: 'fees.view', badge: 'reminders',
+        label: 'Student Finance', icon: IndianRupee, badge: 'reminders', // shown when any page below is allowed (QA-12)
         children: [
           { label: 'Fee Collection', to: '/fees/collect', perm: 'fees.collect' },
-          { label: 'Payment History', to: '/fees/payments' },
+          { label: 'Payment History', to: '/fees/payments', perm: 'fees.view' },
           { label: 'Receipts', to: '/fees/receipts', perm: 'receipts.view_print' },
           { label: 'Fee Reminders', to: '/fees/reminders', perm: 'reminders.view' },
         ],

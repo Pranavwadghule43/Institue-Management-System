@@ -108,6 +108,16 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
     e = db.scalars(select(Enquiry).where(Enquiry.enquiry_code == enquiry_code).with_for_update()).first()
     if e is None:
         raise not_found("enquiry")
+    if idempotency_key:  # QA-07: a retried admission (same key) returns the original instead of "already converted"
+        prior = db.scalars(select(StudentPayment).where(StudentPayment.idempotency_key == idempotency_key)).first()
+        if prior is not None:
+            s = db.get(Student, prior.student_id)
+            if s is None or s.enquiry_id != e.id:
+                raise conflict("IDEMPOTENCY_KEY_REUSED", "This Idempotency-Key was already used for another request.")
+            receipt = db.scalars(select(FeeReceipt).where(FeeReceipt.payment_id == prior.id)).first()
+            return {"student": student_out(s), "fees": fee_summary(db, s, today()), "capacity_warning": False,
+                    "payment": payment_out(prior, receipt.receipt_code if receipt else None, s, user_names(db, [prior.collected_by])),
+                    "receipt": receipt_out(receipt, prior) if receipt else None, "replayed": True}
     if e.status == "Converted" or db.scalar(select(Student.id).where(Student.enquiry_id == e.id)):
         raise conflict("ENQUIRY_ALREADY_CONVERTED", "This enquiry is already converted to a student.")
     if e.course_id and e.course_id != body.course_id:
@@ -159,7 +169,7 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
     db.commit()
     return {"student": student_out(s), "fees": fee_summary(db, s, today()), "capacity_warning": warn,
             "payment": payment_out(payment, receipt.receipt_code, s, {user.id: user.full_name}) if payment else None,
-            "receipt": receipt_out(receipt, payment) if receipt else None}
+            "receipt": receipt_out(receipt, payment) if receipt else None, "replayed": False}
 
 
 class StudentCreateIn(AdmissionIn):

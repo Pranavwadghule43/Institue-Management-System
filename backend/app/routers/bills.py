@@ -212,6 +212,8 @@ def pay_bill(code: str, body: PayIn, idempotency_key: str | None = Header(None, 
         raise conflict("BILL_ALREADY_PAID", "This bill is already paid.")
     if b.status == "Cancelled":
         raise conflict("BILL_CANCELLED", "Cancelled bills can't be paid.")
+    if b.job.status == "Cancelled":  # QA-09: same rule as create_bill - a cancelled job doesn't collect money
+        raise conflict("JOB_CANCELLED", "This service job was cancelled, so its bill can't be paid.")
     if b.grand_total <= 0:
         raise bad("ZERO_TOTAL", "A bill with a zero total can't be paid.")
     if body.payment_mode == "Bank" and not body.reference:
