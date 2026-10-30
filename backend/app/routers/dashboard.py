@@ -25,7 +25,8 @@ def followups(db: Session, limit: int) -> list[dict]:
     rows = db.execute(f.join(select(Student, f.next_due, f.next_remaining, f.balance)).options(joinedload(Student.course))
                       .where(Student.status == "Active", Student.deleted_at.is_(None), f.state.in_(("Overdue", "Due Today")))
                       .order_by(f.next_due, Student.id).limit(limit)).all()
-    return [{"code": s.student_code, "name": s.full_name, "mobile": s.mobile, "course_code": s.course.code, "due_date": due,
+    return [{"code": s.student_code, "name": s.full_name, "mobile": s.mobile, "whatsapp_number": s.whatsapp_number or s.mobile,
+             "course_code": s.course.code, "due_date": due,
              "installment_due": money(rem), "balance": money(bal), "overdue_days": (t - due).days} for s, due, rem, bal in rows]
 
 

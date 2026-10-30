@@ -221,13 +221,23 @@ def events(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(re
 # ----------------------------------------------------------------- documents
 
 ALLOWED = {"pdf": ("application/pdf", b"%PDF-"), "png": ("image/png", b"\x89PNG\r\n\x1a\n"), "jpg": ("image/jpeg", b"\xff\xd8\xff"), "jpeg": ("image/jpeg", b"\xff\xd8\xff")}
-_SENSITIVE = re.compile(r"aadhaar|aadhar|\bpan\b|bank|form ?16|passbook", re.I)
+_SENSITIVE = re.compile(r"aadhaar|aadhar|\bpan\b|bank|form ?16|passbook|cheque|voter|licen[cs]e|passport(?! ?photo)", re.I)
+
+
+# Types that are safe for every staff member with service_jobs.view. Anything else - including no type - is restricted.
+NON_SENSITIVE_TYPES = frozenset({"passport photo", "photo", "photograph", "signature", "application form", "receipt", "challan",
+                                 "acknowledgement"})
 
 
 def is_sensitive(d: ServiceJobDocument) -> bool:
-    # ponytail: mirrors the UI rule (identity/bank documents, not photos) until the DB lead adds an is_sensitive column.
+    """QA-03: identity/bank keywords anywhere -> restricted; otherwise restricted unless the type is known to be harmless.
+
+    Until the DB lead adds service_job_documents.is_sensitive, this rule is the single source of truth.
+    """
     label = f"{d.document_type or ''} {d.file.original_name}"
-    return bool(_SENSITIVE.search(label)) and not re.search(r"photo", label, re.I)
+    if _SENSITIVE.search(label):
+        return True
+    return (d.document_type or "").strip().lower() not in NON_SENSITIVE_TYPES
 
 
 def doc_out(d: ServiceJobDocument, user: CurrentUser, names: dict) -> dict:

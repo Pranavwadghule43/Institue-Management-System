@@ -254,6 +254,7 @@ def list_students(q: str | None = None, course_id: int | None = None, time_slot_
               "active": db.scalar(select(func.count()).where(Student.deleted_at.is_(None), Student.status == "Active"))}
     return paginate(db, stmt, p, lambda r: {
         "code": r[0].student_code, "full_name": r[0].full_name, "guardian_name": r[0].guardian_name, "mobile": r[0].mobile,
+        "whatsapp_number": r[0].whatsapp_number or r[0].mobile,
         "course": {"id": r[0].course.id, "code": r[0].course.code, "name": r[0].course.name},
         "time_slot": {"id": r[0].time_slot.id, "name": r[0].time_slot.name}, "admission_date": r[0].admission_date, "status": r[0].status,
         "net_fee": money(r[0].net_fee), "paid": money(r[1]), "balance": money(r[2]), "paid_pct": pct(r[1], r[0].net_fee),

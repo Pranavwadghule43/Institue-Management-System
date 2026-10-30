@@ -213,7 +213,7 @@ function RowMenu({ s, onDelete }: { s: StudentRow; onDelete: () => void }) {
         </button>
       )}
       {s.next_due && (
-        <a className="menu__item" href={waLink(s.mobile, feeReminderText(s.full_name, s.next_due.amount, s.next_due.due_date, s.balance))} target="_blank" rel="noreferrer">
+        <a className="menu__item" href={waLink(s.whatsapp_number || s.mobile, feeReminderText(s.full_name, s.next_due.amount, s.next_due.due_date, s.balance))} target="_blank" rel="noreferrer">
           <MessageCircle /> WhatsApp reminder
         </a>
       )}

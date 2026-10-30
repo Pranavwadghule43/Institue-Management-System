@@ -168,7 +168,7 @@ function AdminDashboard() {
                       </td>
                       <td className="ta-r">
                         <div className="actions">
-                          <a className="icon-btn sm" style={{ color: '#1fa855' }} href={waLink(st.mobile, feeReminderText(st.name, st.installment_due, st.due_date, st.balance))} target="_blank" rel="noreferrer"
+                          <a className="icon-btn sm" style={{ color: '#1fa855' }} href={waLink(st.whatsapp_number || st.mobile, feeReminderText(st.name, st.installment_due, st.due_date, st.balance))} target="_blank" rel="noreferrer"
                             data-tip="WhatsApp reminder" aria-label={`Send WhatsApp reminder to ${st.name}`} onClick={(e) => { e.stopPropagation(); toast('success', 'WhatsApp opened', `Reminder prepared for ${st.name}`); }}>
                             <MessageCircle />
                           </a>

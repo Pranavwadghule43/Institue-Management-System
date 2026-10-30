@@ -72,7 +72,6 @@ def test_cancelling_a_paid_bill_keeps_collected_cash_visible(admin, catalog, job
 # ----------------------------------------------------------------- QA-03 (High) sensitive documents detected by file name
 
 
-@bug("QA-03", "is_sensitive() excludes any name containing 'photo', so 'aadhaar photo copy.jpg' is public to staff")
 def test_aadhaar_photo_copy_is_sensitive(admin, job, make_staff):
     jpg = b"\xff\xd8\xff\xe0" + b"0" * 50
     d = ok(admin.post(f"/service-jobs/{job['code']}/documents", files={"file": ("aadhaar photo copy.jpg", jpg, "image/jpeg")}), 201)
@@ -80,7 +79,6 @@ def test_aadhaar_photo_copy_is_sensitive(admin, job, make_staff):
     assert staff.get(f"/service-jobs/{job['code']}/documents/{d['id']}").status_code == 403
 
 
-@bug("QA-03", "an unlabelled scan (camera file name, no document_type) is treated as non-sensitive")
 def test_unlabelled_upload_is_restricted_by_default(admin, job, make_staff):
     jpg = b"\xff\xd8\xff\xe0" + b"0" * 50
     d = ok(admin.post(f"/service-jobs/{job['code']}/documents", files={"file": ("IMG_20261027.jpg", jpg, "image/jpeg")}), 201)
@@ -195,7 +193,6 @@ def test_bill_of_cancelled_job_cannot_be_paid(admin, catalog, job):
 # ----------------------------------------------------------------- QA-10 (Medium) Excel formula injection
 
 
-@bug("QA-10", "openpyxl stores strings starting with '=' as formulas; customer/student names reach exports unescaped")
 def test_excel_export_writes_user_text_as_text(admin):
     ok(admin.post("/customers", json={"full_name": '=HYPERLINK("http://evil.example","x")', "mobile": "9811099999"}), 201)
     wb = openpyxl.load_workbook(io.BytesIO(admin.get("/reports/customer-history/export.xlsx").content))
@@ -205,7 +202,6 @@ def test_excel_export_writes_user_text_as_text(admin):
 # ----------------------------------------------------------------- QA-11 (Medium) WhatsApp number not in follow-up payloads
 
 
-@bug("QA-11", "dashboard follow-ups and student list omit whatsapp_number, so the UI messages the mobile number")
 def test_followups_and_student_list_carry_whatsapp_number(admin, course, enquiry):
     from conftest import admission_body
     s = ok(admin.post(f"/enquiries/{enquiry['code']}/convert", json=admission_body(

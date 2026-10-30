@@ -90,7 +90,7 @@ export default function StaffDashboard() {
                         </td>
                         <td className="ta-r" onClick={(e) => e.stopPropagation()}>
                           <div className="actions">
-                            <a className="btn btn-whatsapp btn-sm" href={waLink(st.mobile, feeReminderText(st.name, st.installment_due, st.due_date, st.balance))} target="_blank" rel="noreferrer" onClick={() => toast('success', 'WhatsApp opened', st.name)}><MessageCircle /> Remind</a>
+                            <a className="btn btn-whatsapp btn-sm" href={waLink(st.whatsapp_number || st.mobile, feeReminderText(st.name, st.installment_due, st.due_date, st.balance))} target="_blank" rel="noreferrer" onClick={() => toast('success', 'WhatsApp opened', st.name)}><MessageCircle /> Remind</a>
                             {can('fees.collect') && <Link className="btn btn-secondary btn-sm" to={`/fees/collect?student=${st.code}`}>Collect</Link>}
                           </div>
                         </td>

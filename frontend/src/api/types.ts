@@ -34,7 +34,7 @@ export interface Enquiry {
 export interface EnquiryActivity { at: string; by: Ref | null; action: string; old_status: string | null; status: string; note: string | null }
 
 export interface StudentRow {
-  code: string; full_name: string; guardian_name: string; mobile: string; course: { id: number; code: string; name: string };
+  code: string; full_name: string; guardian_name: string; mobile: string; whatsapp_number: string; course: { id: number; code: string; name: string };
   time_slot: { id: number; name: string }; admission_date: string; status: StudentStatus; net_fee: Money; paid: Money; balance: Money;
   paid_pct: number; fee_state: FeeState; next_due: { due_date: string; amount: Money } | null; aadhaar_masked: string | null; archived: boolean;
 }
@@ -110,7 +110,7 @@ export interface Expense {
   added_by: Ref | null; has_attachment: boolean; created_at: string; updated_at: string;
 }
 
-export interface Followup { code: string; name: string; mobile: string; course_code: string; due_date: string; installment_due: Money; balance: Money; overdue_days: number }
+export interface Followup { code: string; name: string; mobile: string; whatsapp_number: string; course_code: string; due_date: string; installment_due: Money; balance: Money; overdue_days: number }
 export interface AuditItem { at: string; action: string; summary: string | null; entity_type: string; entity_id: string | null; by: Ref | null }
 export interface DayTotals { fees: Money; services: Money; expenses: Money; income: Money; net: Money }
 export interface SeriesRow extends DayTotals { key: string; receipts: number; bills: number; partial?: boolean }

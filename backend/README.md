@@ -1,6 +1,6 @@
 # IMS API (FastAPI)
 
-Business backend for the Updaate Computers IMS React UI. It replaces `src/data/store.ts` with real REST calls.
+Business backend for the Updaate Computers IMS React UI. The React app in `frontend/` calls these endpoints; the old in-memory demo store (`store.ts`) has been removed.
 Dev DB: Supabase PostgreSQL (36 approved tables). Production target: MySQL.
 
 ## Run
@@ -8,6 +8,7 @@ Dev DB: Supabase PostgreSQL (36 approved tables). Production target: MySQL.
 ```bash
 cd backend
 uv venv -p 3.11 .venv && uv pip install -p .venv/Scripts/python.exe -e ".[dev]"
+# without uv:  py -3.11 -m venv .venv  &&  .venv/Scripts/python -m pip install -e ".[dev]"
 cp .env.example .env            # fill DATABASE_URL, AADHAAR_* keys
 .venv/Scripts/python -m uvicorn app.main:app --reload     # http://localhost:8000/docs
 .venv/Scripts/python -m pytest -p no:logging               # local throwaway Postgres, never the shared DB
@@ -71,16 +72,16 @@ Routers hold both the route and its business rules; there is no separate reposit
 | 13 | 25 reports + exports | `GET /reports`, `/reports/{slug}`, `/reports/{slug}/export.xlsx` | test_finance_reports |
 | 14 | Financial integrity | `ledger.py`; row locks; idempotency keys; reconciliation tests | test_fees, test_finance_reports |
 | 15 | Auth / sessions / RBAC (Dhruvank) | `security.py` seam on `users`, `user_sessions`, `login_attempts` | test_auth_staff |
-| 16 | Validation, API, concurrency, reconciliation tests | `tests/` (35 tests) | - |
+| 16 | Validation, API, concurrency, reconciliation tests | `tests/` (67 tests incl. QA regressions and sprint acceptance tests; the live-schema test is skipped without `IMS_LIVE_DATABASE_URL`) | - |
 
 ## Rules worth knowing
 
 - **Money**: `Decimal` end to end, sent as `"1500.00"` strings. Clients send business input only; unknown fields return 422.
 - **Income ledger**: valid `student_payments` (by `received_at`) + `service_bills` with status `Paid` (by `paid_at`). Expenses: not soft-deleted, by `expense_date`. Receipts are never summed.
-- **Installments**: split mirrors `admitStudent` in `store.ts` (multiples of 50, last row takes the rest, month-end clamping). Allocation is FIFO and rebuilt after every payment or reversal, so `paid_amount` always equals valid payments.
+- **Installments**: split keeps the rule of the original UI demo (`admitStudent`) (multiples of 50, last row takes the rest, month-end clamping). Allocation is FIFO and rebuilt after every payment or reversal, so `paid_amount` always equals valid payments.
 - **Idempotency**: `Idempotency-Key` header on fee payments, admissions and bill payments. A replay returns the original with `"replayed": true`.
 - **Dates**: stored UTC, day boundaries in `INSTITUTE_TIMEZONE`.
-- **Never claimed**: WhatsApp is "opened" only. There is no PDF endpoint (browser print). Backup is history only (no fake trigger). Service cost/profit returns `null` with `pending_cost_rule`.
+- **Never claimed**: WhatsApp is "opened" only. There is no server PDF endpoint: the browser renders the A5 receipt/bill PDFs (`frontend/src/lib/pdf.ts`) or prints them. Backup is history only (no fake trigger). Service cost/profit returns `null` with `pending_cost_rule`.
 
 ## Requests for Pranav (schema; nothing was changed by this backend)
 
@@ -89,18 +90,18 @@ Routers hold both the route and its business rules; there is no separate reposit
 3. Case-insensitive uniqueness for `course_subtypes(course_id, lower(name))` and `expense_categories(lower(name))`. It's checked in code today; a unique index closes the race.
 4. MySQL equivalents are needed for the partial index `one_non_cancelled_bill_per_job`, the account-limit trigger and `jsonb`.
 5. RLS currently allows only the two developer roles. The deployed API needs its own service role and policy.
-6. Seed decisions: `number_sequences` start values (receipts at 01201 and bills at 0301 like the demo, or 1?). Missing rows start at 1. Institute details are blank.
+6. Seed decisions: `number_sequences` start values (receipts at 01201 and bills at 0301 like the demo, or 1?). Missing rows start at 1. Institute details are seeded from the receipt template by `app.cli seed` and editable in Settings.
 
 ## Requests for Dhruvank (security)
 
 1. `security.py` is a working seam, not the final implementation: scrypt hashes, opaque bearer tokens hashed into `user_sessions`, and a 5-try / 15-minute lockout. Replace its internals while keeping `get_current_user`, `require`, `require_any`, `require_admin` and `CurrentUser.can`.
 2. Agree the Aadhaar Fernet key and HMAC key (`AADHAAR_ENC_KEY`, `AADHAAR_HASH_KEY`). Data written with one key can't be read with another.
 3. `payments.delete_or_reverse` is treated as Admin-only, per the DB handoff (the UI lists it as delegable).
-4. No idle-timeout yet: sessions expire after `SESSION_HOURS`. `last_activity_at` is set at login only.
+4. Done: 30-minute idle timeout (`SESSION_IDLE_MINUTES`, via `last_activity_at`). Lockout race, password policy and username-timing fixes (QA-04/16/17) are on branch `dhruvank`.
 
 ## Still open (not invented)
 
 - Refund rule when a paid bill is cancelled. Its replacement bill can't collect money until this is decided (`PREVIOUS_PAYMENT_UNRESOLVED`).
 - Service cost rule (Service Profit report). Student photo upload. Backup destination, encryption, schedule and restore policy.
 - Re-activating Completed/Left students and course transfers are not exposed until the product owner approves them.
-- The React app still uses `store.ts`. Wiring it to these endpoints is the frontend integration step.
+- Verification against the shared Supabase database (schema drift test, RLS/service role) is pending database access.

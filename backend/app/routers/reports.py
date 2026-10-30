@@ -542,6 +542,10 @@ def export_xlsx(slug: str, rq: ReportQuery = Depends(), db: Session = Depends(ge
             c.font = Font(bold=True)
             if kind == M:
                 c.number_format = "#,##0.00"
+    for row in ws.iter_rows():  # QA-10: the export never writes formulas, so user text starting with '=' stays text
+        for c in row:
+            if c.data_type == "f":
+                c.data_type = "s"
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)

@@ -6,14 +6,17 @@ All data comes from the server (no demo or sample data in the app). Money, total
 ## Run
 
 ```bash
-# 1. API (see backend/README.md for setup, seeding and the single Admin account)
-backend/.venv/Scripts/python -m uvicorn app.main:app --app-dir backend --env-file backend/.env --port 8000
+# 1. API - run from backend/ (see backend/README.md for setup, seeding and the single Admin account)
+cd backend
+.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000   # Linux/macOS: .venv/bin/python
 
-# 2. Web app
-cp .env.example .env   # VITE_API_URL=http://localhost:8000/api/v1
+# 2. Web app - run from frontend/ (package.json lives there; Vite reads .env from frontend/)
+cd frontend
+cp ../.env.example .env   # VITE_API_URL=http://localhost:8000/api/v1
 npm install
 npm run dev            # http://localhost:5173
-npm run build          # production build -> dist/
+npm run build          # type-check + production build -> frontend/dist/
+npm test
 ```
 
 Sign in with a real account: the one Admin (created with `python -m app.cli create-admin`) and up to 4 Staff accounts the Admin creates
