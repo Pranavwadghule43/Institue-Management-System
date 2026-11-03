@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from ..common import (
     PAY_LABEL, PAY_MODES, ZERO, In, OptStr, OptText, Paging, PayMode, PositiveMoney, Reason, add_months_clamped, amount_in_words, audit, bounds,
-    institute, like, money, next_code, now, paginate, paging, today, user_names, user_ref,
+    institute, like, money, next_code, now, one_trip, paginate, paging, today, user_names, user_ref,
 )
 from ..db import get_db
 from ..errors import bad, conflict, not_found
@@ -258,9 +258,9 @@ def reminders(tab: Literal["today", "tomorrow", "overdue", "pending", "fully_pai
     if course_id:
         base = base.where(Student.course_id == course_id)
     active = base.where(Student.status == "Active")
-    counts = {k: db.scalar(select(func.count()).select_from(active.where(f.state == v).subquery())) for k, v in TABS.items()}
-    counts["pending"] = db.scalar(select(func.count()).select_from(active.where(f.state != "Fully Paid").subquery()))
-    counts["fully_paid"] = db.scalar(select(func.count()).select_from(base.where(f.state == "Fully Paid").subquery()))
+    count_stmts = {k: select(func.count()).select_from(active.where(f.state == v).subquery()) for k, v in TABS.items()}
+    count_stmts["pending"] = select(func.count()).select_from(active.where(f.state != "Fully Paid").subquery())
+    count_stmts["fully_paid"] = select(func.count()).select_from(base.where(f.state == "Fully Paid").subquery())
     if tab in TABS:
         stmt = active.where(f.state == TABS[tab]).order_by(f.next_due, Student.id)
     elif tab == "pending":
@@ -268,12 +268,16 @@ def reminders(tab: Literal["today", "tomorrow", "overdue", "pending", "fully_pai
     else:  # mirrors the UI: fully paid across all statuses
         stmt = base.where(f.state == "Fully Paid").order_by(Student.full_name)
     stmt = stmt.options(joinedload(Student.course))
+    # All tab counts + the page's "total due" in one round trip (performance); every statement is unchanged.
+    due_stmt = select(func.coalesce(func.sum(stmt.subquery().c.remaining), 0)) if tab != "fully_paid" else None
+    got = one_trip(db, *count_stmts.values(), *([due_stmt] if due_stmt is not None else []))
+    counts = dict(zip(count_stmts, got))
     page = paginate(db, stmt, p, lambda r: {
         "student": {"code": r[0].student_code, "name": r[0].full_name, "mobile": r[0].mobile, "whatsapp_number": r[0].whatsapp_number},
         "course": {"id": r[0].course.id, "code": r[0].course.code}, "next_due_date": r[3], "installment_due": money(r[4] or 0),
         "balance": money(r[2]), "total_paid": money(r[1]), "fee_state": r[5], "overdue_days": (t - r[3]).days if r[3] and r[3] < t else 0,
         "last_reminded_at": r[6]}, scalars=False, counts=counts)
-    page["total_due"] = money(db.scalar(select(func.coalesce(func.sum(stmt.subquery().c.remaining), 0))) if tab != "fully_paid" else 0)
+    page["total_due"] = money(got[len(count_stmts)] if due_stmt is not None else 0)
     return page
 
 

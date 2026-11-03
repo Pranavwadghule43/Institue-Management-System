@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import Field, model_validator
 from sqlalchemy import exists, func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from ..common import In, OptStr, OptText, Paging, Str, apply_changes, audit, like, money, next_code, now, paging, today, user_names, user_ref
 from ..config import settings
@@ -254,7 +254,8 @@ def _storage_root() -> Path:
 @router.get("/{code}/documents")
 def list_documents(code: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_jobs.view"))):
     j = get_job(db, code)
-    docs = db.scalars(select(ServiceJobDocument).where(ServiceJobDocument.job_id == j.id, ServiceJobDocument.deleted_at.is_(None)).order_by(ServiceJobDocument.created_at)).all()
+    docs = db.scalars(select(ServiceJobDocument).options(joinedload(ServiceJobDocument.file))  # file rows in the same query (no N+1)
+                      .where(ServiceJobDocument.job_id == j.id, ServiceJobDocument.deleted_at.is_(None)).order_by(ServiceJobDocument.created_at)).all()
     names = user_names(db, [d.uploaded_by for d in docs])
     return [doc_out(d, user, names) for d in docs]
 

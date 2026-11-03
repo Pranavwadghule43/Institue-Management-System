@@ -129,14 +129,18 @@ _bearer = HTTPBearer(auto_error=False)
 def get_current_user(cred: HTTPAuthorizationCredentials | None = Depends(_bearer), db: Session = Depends(get_db)) -> CurrentUser:
     if cred is None:
         raise AppError(401, "UNAUTHENTICATED", "Sign in to continue.")
-    row = db.execute(
-        select(UserSession, User).join(User, User.id == UserSession.user_id).where(
-            UserSession.token_hash == token_hash(cred.credentials), UserSession.revoked_at.is_(None),
-            UserSession.expires_at > now(), User.is_active.is_(True), User.deleted_at.is_(None))
-    ).first()
-    if row is None:
+    # Session, user and permission codes in ONE round trip (performance): one row per permission, or a single row
+    # with code NULL when the user has none. Same conditions and same result as the former two separate queries.
+    rows = db.execute(
+        select(UserSession, User, Permission.code).join(User, User.id == UserSession.user_id)
+        .outerjoin(UserPermission, UserPermission.user_id == User.id).outerjoin(Permission, Permission.id == UserPermission.permission_id)
+        .where(UserSession.token_hash == token_hash(cred.credentials), UserSession.revoked_at.is_(None),
+               UserSession.expires_at > now(), User.is_active.is_(True), User.deleted_at.is_(None))
+    ).all()
+    if not rows:
         raise AppError(401, "SESSION_INVALID", "Your session has expired. Please sign in again.")
-    s, u = row
+    s, u, _ = rows[0]
+    perms = frozenset(code for *_, code in rows if code is not None)
     t = now()
     if s.last_activity_at and t - s.last_activity_at > timedelta(minutes=settings.session_idle_minutes):
         s.revoked_at = t
@@ -145,7 +149,7 @@ def get_current_user(cred: HTTPAuthorizationCredentials | None = Depends(_bearer
     if s.last_activity_at is None or t - s.last_activity_at > timedelta(seconds=60):  # at most one write per minute per session
         s.last_activity_at = t
         db.commit()
-    return CurrentUser(u.id, u.username, u.full_name, u.role, u.designation, user_permissions(db, u.id), s.id)
+    return CurrentUser(u.id, u.username, u.full_name, u.role, u.designation, perms, s.id)
 
 
 def require(perm: str):
@@ -232,8 +236,9 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     db.add(UserSession(user_id=u.id, token_hash=token_hash(token), expires_at=expires, last_activity_at=now()))
     db.add(LoginAttempt(username=username, succeeded=True, ip_address=ip))
     audit(db, u.id, "LOGIN_SUCCESS", "Auth", u.username, "Signed in")
-    db.commit()
+    # Read before the commit (same transaction): saves opening a second transaction just for this lookup.
     cu = CurrentUser(u.id, u.username, u.full_name, u.role, u.designation, user_permissions(db, u.id))
+    db.commit()
     return {"token": token, "token_type": "bearer", "expires_at": expires, "user": me_payload(cu)}
 
 

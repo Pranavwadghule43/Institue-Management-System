@@ -2,12 +2,12 @@
 from fastapi import APIRouter, Depends
 from pydantic import Field
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from ..common import In, Mobile, Money, OptMobile, OptStr, OptText, Paging, Str, apply_changes, audit, like, local_date, money, next_code, paginate, paging
 from ..db import get_db
 from ..errors import bad, conflict, not_found
-from ..models import Customer, Service, ServiceBill, ServiceCategory, ServiceJob
+from ..models import Customer, Service, ServiceBill, ServiceCategory, ServiceJob, ServiceJobItem
 from ..security import CurrentUser, get_current_user, require
 
 router = APIRouter(tags=["customers & service master"])
@@ -98,8 +98,11 @@ def update_customer(code: str, body: CustomerPatch, db: Session = Depends(get_db
 @router.get("/customers/{code}/history")
 def customer_history(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(require("customers.view"))):
     c = get_customer(db, code)
-    jobs = db.scalars(select(ServiceJob).where(ServiceJob.customer_id == c.id).order_by(ServiceJob.service_date.desc(), ServiceJob.id.desc())).all()
-    bills = db.scalars(select(ServiceBill).where(ServiceBill.customer_id == c.id).order_by(ServiceBill.created_at.desc())).all()
+    # Eager loading (performance): items + their services, and each bill's job, come in batched queries instead of one per row.
+    jobs = db.scalars(select(ServiceJob).options(selectinload(ServiceJob.items).joinedload(ServiceJobItem.service))
+                      .where(ServiceJob.customer_id == c.id).order_by(ServiceJob.service_date.desc(), ServiceJob.id.desc())).all()
+    bills = db.scalars(select(ServiceBill).options(joinedload(ServiceBill.job))
+                       .where(ServiceBill.customer_id == c.id).order_by(ServiceBill.created_at.desc())).all()
     return {
         "jobs": [{"code": j.job_code, "services": [i.service.name for i in j.items], "application_name": j.application_name,
                   "service_date": j.service_date, "due_date": j.due_date, "status": j.status} for j in jobs],

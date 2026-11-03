@@ -21,6 +21,7 @@ let onUnauthorized: () => void = () => {};
 
 export const getToken = () => token;
 export function setToken(t: string | null) {
+  if (t !== token) clearQueryCache(); // sign-in / sign-out: never show one user's cached data to another
   token = t;
   try {
     if (t) sessionStorage.setItem(TOKEN_KEY, t);
@@ -93,6 +94,7 @@ let version = 0;
 const listeners = new Set<() => void>();
 /** Call after any successful write: every mounted query refetches. */
 export function refresh() {
+  clearQueryCache(); // after a save, revisited screens load fresh data instead of showing pre-save copies
   version++;
   listeners.forEach((l) => l());
 }
@@ -105,8 +107,56 @@ export async function write<T>(p: Promise<T>): Promise<T> {
   return r;
 }
 
+/* ------------------------------ request sharing + recent-answer cache (performance) ------------------------------ */
+
+// Identical GETs already on their way share ONE network request (React StrictMode's double mount in dev, or two
+// components on one page asking for the same list). Keyed by token + write-version, so a request started before a
+// save is never reused after it.
+const inflight = new Map<string, Promise<unknown>>();
+// Last answer per query, shown instantly when a screen is revisited while the fresh copy loads (stale-while-revalidate).
+// Memory only (this tab), at most 5 minutes old, and wiped on every save and every sign-in / sign-out.
+const CACHE_MAX_AGE_MS = 5 * 60_000;
+const CACHE_MAX_ENTRIES = 150;
+const cache = new Map<string, { data: unknown; at: number }>();
+
+export function clearQueryCache() {
+  cache.clear();
+  inflight.clear();
+}
+
+function cached<T>(key: string): T | undefined {
+  const hit = cache.get(key);
+  if (!hit) return undefined;
+  if (Date.now() - hit.at > CACHE_MAX_AGE_MS) {
+    cache.delete(key);
+    return undefined;
+  }
+  return hit.data as T;
+}
+
+function sharedGet<T>(key: string, path: string, query?: Query): Promise<T> {
+  const k = `${token ?? ''}|${version}|${key}`;
+  let p = inflight.get(k) as Promise<T> | undefined;
+  if (!p) {
+    const tokenAtStart = token, versionAtStart = version;
+    p = api<T>(path, { query })
+      .then((data) => {
+        if (token === tokenAtStart && version === versionAtStart) { // nothing saved / no sign-out meanwhile
+          cache.delete(key); // re-insert = most recent last (simple LRU)
+          cache.set(key, { data, at: Date.now() });
+          if (cache.size > CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value as string);
+        }
+        return data;
+      })
+      .finally(() => inflight.delete(k));
+    inflight.set(k, p);
+  }
+  return p;
+}
+
 /** GET with refetch on refresh(). `loading` is true only until the first answer for this exact query;
- *  refetches after writes keep showing the current data (no skeleton flicker). Pass path=null to skip. */
+ *  refetches after writes keep showing the current data (no skeleton flicker). Pass path=null to skip.
+ *  A screen revisited within a few minutes shows its last answer at once and updates when the fresh one arrives. */
 export function useQuery<T>(path: string | null, query?: Query) {
   const v = useVersion();
   const key = path === null ? null : path + qs(query);
@@ -114,7 +164,7 @@ export function useQuery<T>(path: string | null, query?: Query) {
   useEffect(() => {
     if (key === null) return;
     let live = true;
-    api<T>(path!, { query })
+    sharedGet<T>(key, path!, query)
       .then((data) => live && setState({ key, data }))
       .catch((error: ApiError) => live && setState((s) => ({ key, data: s.key === key ? s.data : undefined, error })));
     return () => {
@@ -123,7 +173,13 @@ export function useQuery<T>(path: string | null, query?: Query) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, v]);
   const ready = key !== null && state.key === key;
-  return { data: ready ? state.data : undefined, error: ready ? state.error : undefined, loading: key !== null && !ready, reload: refresh };
+  const recent = !ready && key !== null ? cached<T>(key) : undefined;
+  return {
+    data: ready ? state.data : recent,
+    error: ready ? state.error : undefined,
+    loading: key !== null && !ready && recent === undefined,
+    reload: refresh,
+  };
 }
 
 export interface Page<T> { items: T[]; page: number; page_size: number; total: number; pages: number }

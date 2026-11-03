@@ -5,9 +5,9 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
-from ..common import PAY_LABEL, ZERO, bounds, like, money, today, user_names, user_ref
+from ..common import PAY_LABEL, ZERO, bounds, like, money, one_trip, today, user_names, user_ref
 from ..db import get_db
-from ..ledger import fee_cols, money_dict, series, totals
+from ..ledger import fee_cols, money_dict, series, totals_from, totals_stmts
 from ..models import (
     AuditLog, Customer, Enquiry, Expense, FeeReceipt, ServiceBill, ServiceJob, ServiceJobEvent, ServiceJobStaff, ServicePayment, Student,
     StudentPayment as P,
@@ -30,10 +30,10 @@ def followups(db: Session, limit: int) -> list[dict]:
              "installment_due": money(rem), "balance": money(bal), "overdue_days": (t - due).days} for s, due, rem, bal in rows]
 
 
-def fee_state_count(db: Session, states: tuple[str, ...]) -> int:
+def fee_state_count_stmt(states: tuple[str, ...]):
     f = fee_cols(today())
-    return db.scalar(select(func.count()).select_from(
-        f.join(select(Student.id)).where(Student.status == "Active", Student.deleted_at.is_(None), f.state.in_(states)).subquery())) or 0
+    return select(func.count()).select_from(
+        f.join(select(Student.id)).where(Student.status == "Active", Student.deleted_at.is_(None), f.state.in_(states)).subquery())
 
 
 def recent_audit(db: Session, limit: int, actor_id: int | None = None) -> list[dict]:
@@ -52,32 +52,45 @@ def admin_dashboard(trend_days: int = Query(14, ge=1, le=90), db: Session = Depe
     yesterday = t - timedelta(days=1)
     live = Student.deleted_at.is_(None)
     f = fee_cols(t)
-    pending = db.scalar(f.join(select(func.coalesce(func.sum(f.balance), 0)).select_from(Student)).where(live, Student.status == "Active"))
-    now_, prev = totals(db, t, t), totals(db, yesterday, yesterday)
     start, end = bounds(t, t)
+    # Every single-number figure on this page in ONE round trip (performance); each statement is unchanged.
+    (pending, unpaid_count, unpaid_sum, total_students, active_students, admissions_today, admissions_month, overdue_students,
+     completed_today, *money_today_yesterday) = one_trip(
+        db,
+        f.join(select(func.coalesce(func.sum(f.balance), 0)).select_from(Student)).where(live, Student.status == "Active"),
+        select(func.count()).where(ServiceBill.status == "Unpaid"),
+        select(func.coalesce(func.sum(ServiceBill.grand_total), 0)).where(ServiceBill.status == "Unpaid"),
+        select(func.count()).where(live),
+        select(func.count()).where(live, Student.status == "Active"),
+        select(func.count()).where(live, Student.admission_date == t),
+        select(func.count()).where(live, Student.admission_date >= t.replace(day=1)),
+        fee_state_count_stmt(("Overdue",)),
+        select(func.count(func.distinct(ServiceJobEvent.job_id))).where(
+            ServiceJobEvent.new_status == "Completed", ServiceJobEvent.created_at >= start, ServiceJobEvent.created_at < end),
+        *totals_stmts(t, t), *totals_stmts(yesterday, yesterday),
+    )
+    now_, prev = totals_from(*money_today_yesterday[:3]), totals_from(*money_today_yesterday[3:])
     last = db.execute(select(P, FeeReceipt.receipt_code).join(FeeReceipt, FeeReceipt.payment_id == P.id)
                       .where(P.status == "Valid", P.received_at >= start, P.received_at < end).order_by(P.received_at.desc()).limit(1)).first()
     jobs = dict(db.execute(select(ServiceJob.status, func.count()).group_by(ServiceJob.status)).all())
-    unpaid = db.execute(select(func.count(), func.coalesce(func.sum(ServiceBill.grand_total), 0)).where(ServiceBill.status == "Unpaid")).one()
     return {
         "kpis": {
-            "total_students": db.scalar(select(func.count()).where(live)),
-            "active_students": db.scalar(select(func.count()).where(live, Student.status == "Active")),
-            "admissions_today": db.scalar(select(func.count()).where(live, Student.admission_date == t)),
+            "total_students": total_students,
+            "active_students": active_students,
+            "admissions_today": admissions_today,
             "pending_fees": money(pending),
             "fee_collection_today": money(now_["fees"]), "service_income_today": money(now_["services"]),
             "expenses_today": money(now_["expenses"]), "net_income_today": money(now_["net"]),
         },
-        "admissions_this_month": db.scalar(select(func.count()).where(live, Student.admission_date >= t.replace(day=1))),
-        "overdue_students": fee_state_count(db, ("Overdue",)),
+        "admissions_this_month": admissions_month,
+        "overdue_students": overdue_students or 0,
         "last_receipt": None if last is None else {"receipt_no": last[1], "at": last[0].received_at, "amount": money(last[0].amount),
                                                    "by": user_ref(user_names(db, [last[0].collected_by]), last[0].collected_by)},
         "trend": [money_dict(d) for d in series(db, t - timedelta(days=trend_days - 1), t, "day")],
         "service_status_counts": {s: jobs.get(s, 0) for s in ("Pending", "In Process", "On Hold", "Completed", "Cancelled")},
         "service_desk": {
-            "completed_today": db.scalar(select(func.count(func.distinct(ServiceJobEvent.job_id))).where(
-                ServiceJobEvent.new_status == "Completed", ServiceJobEvent.created_at >= start, ServiceJobEvent.created_at < end)),
-            "unpaid_bills": unpaid[0], "pending_amount": money(unpaid[1])},
+            "completed_today": completed_today,
+            "unpaid_bills": unpaid_count, "pending_amount": money(unpaid_sum)},
         "fee_followups": followups(db, 8),
         "recent_activity": recent_audit(db, 5) if user.can("audit.view") else [],
         "comparisons": {"today": money_dict(now_), "yesterday": money_dict(prev)},
@@ -139,20 +152,34 @@ def global_search(q: str = Query(min_length=2, max_length=100), db: Session = De
     return out
 
 
-def _urgent_jobs(db: Session) -> int:
-    return db.scalar(select(func.count()).where(ServiceJob.status.in_(("Pending", "In Process")), ServiceJob.due_date < today())) or 0
+def _counts(db: Session, wanted: dict) -> dict:
+    """{name: count statement} -> {name: value}, all in one round trip (empty dict -> no query)."""
+    return dict(zip(wanted, one_trip(db, *wanted.values()))) if wanted else {}
 
 
 @router.get("/meta/sidebar")
 def sidebar(db: Session = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Badge counts for the navigation (null when the user can't see that module)."""
-    return {"fee_reminders": fee_state_count(db, ("Overdue", "Due Today")) if user.can("fees.view") else None,
-            "open_jobs": db.scalar(select(func.count()).where(ServiceJob.status.in_(("Pending", "In Process")))) if user.can("service_jobs.view") else None}
+    wanted = {}
+    if user.can("fees.view"):
+        wanted["fee_reminders"] = fee_state_count_stmt(("Overdue", "Due Today"))
+    if user.can("service_jobs.view"):
+        wanted["open_jobs"] = select(func.count()).where(ServiceJob.status.in_(("Pending", "In Process")))
+    got = _counts(db, wanted)
+    return {"fee_reminders": (got["fee_reminders"] or 0) if "fee_reminders" in got else None, "open_jobs": got.get("open_jobs")}
 
 
 @router.get("/meta/notifications")
 def notifications(db: Session = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
-    return {"overdue_fees": fee_state_count(db, ("Overdue",)) if user.can("fees.view") else None,
-            "urgent_jobs": _urgent_jobs(db) if user.can("service_jobs.view") else None,
-            "unpaid_bills": db.scalar(select(func.count()).where(ServiceBill.status == "Unpaid")) if user.can("service_bill.create") else None,
+    wanted = {}
+    if user.can("fees.view"):
+        wanted["overdue_fees"] = fee_state_count_stmt(("Overdue",))
+    if user.can("service_jobs.view"):
+        wanted["urgent_jobs"] = select(func.count()).where(ServiceJob.status.in_(("Pending", "In Process")), ServiceJob.due_date < today())
+    if user.can("service_bill.create"):
+        wanted["unpaid_bills"] = select(func.count()).where(ServiceBill.status == "Unpaid")
+    got = _counts(db, wanted)
+    return {"overdue_fees": (got["overdue_fees"] or 0) if "overdue_fees" in got else None,
+            "urgent_jobs": (got["urgent_jobs"] or 0) if "urgent_jobs" in got else None,
+            "unpaid_bills": got.get("unpaid_bills"),
             "recent_activity": recent_audit(db, 3) if user.can("audit.view") else []}

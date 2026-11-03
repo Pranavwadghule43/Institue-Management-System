@@ -52,15 +52,17 @@ def _get(db: Session, code: str, lock: bool = False) -> Enquiry:
     return e
 
 
-def enquiry_out(db: Session, e: Enquiry, names: dict | None = None) -> dict:
+def enquiry_out(db: Session, e: Enquiry, names: dict | None = None, student_codes: dict | None = None) -> dict:
     names = names if names is not None else user_names(db, [e.handling_staff_id, e.created_by])
+    student_code = (student_codes.get(e.id) if student_codes is not None
+                    else db.scalar(select(Student.student_code).where(Student.enquiry_id == e.id)))
     c = db.get(Course, e.course_id) if e.course_id else None
     st = db.get(CourseSubtype, e.course_subtype_id) if e.course_subtype_id else None
     return {"code": e.enquiry_code, "student_name": e.student_name, "guardian_name": e.guardian_name, "mobile": e.mobile, "email": e.email,
             "address": e.address, "reference": e.reference, "aadhaar_masked": aadhaar_mask(e.aadhaar_last4),
             "course": {"id": c.id, "code": c.code, "name": c.name} if c else None, "course_subtype": {"id": st.id, "name": st.name} if st else None,
             "status": e.status, "handling_staff": user_ref(names, e.handling_staff_id), "created_by": user_ref(names, e.created_by),
-            "student_code": db.scalar(select(Student.student_code).where(Student.enquiry_id == e.id)),
+            "student_code": student_code,
             "created_at": e.created_at, "updated_at": e.updated_at}
 
 
@@ -79,7 +81,18 @@ def list_enquiries(q: str | None = None, status: Literal["New", "Pending", "Foll
     if staff_id:
         stmt = stmt.where(Enquiry.handling_staff_id == staff_id)
     names = dict(db.execute(select(User.id, User.full_name)).all())
-    return paginate(db, stmt, p, lambda e: enquiry_out(db, e, names))
+    codes: dict[int, str] = {}
+    held: list = []  # the session only remembers objects something still references
+
+    def prefetch(rows):
+        # Whole page in 3 queries instead of 2 per row (N+1). Loaded courses/subtypes stay in the session (held), so
+        # the db.get() calls in enquiry_out find them without another query; student codes are passed in.
+        if ids := {e.course_id for e in rows if e.course_id}:
+            held.extend(db.scalars(select(Course).where(Course.id.in_(ids))).all())
+        if ids := {e.course_subtype_id for e in rows if e.course_subtype_id}:
+            held.extend(db.scalars(select(CourseSubtype).where(CourseSubtype.id.in_(ids))).all())
+        codes.update(db.execute(select(Student.enquiry_id, Student.student_code).where(Student.enquiry_id.in_([e.id for e in rows]))).all())
+    return paginate(db, stmt, p, lambda e: enquiry_out(db, e, names, codes), prefetch=prefetch)
 
 
 @router.get("/summary")
