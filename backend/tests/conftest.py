@@ -39,7 +39,7 @@ BEGIN
   PERFORM 1 FROM public.account_limits WHERE id=1 FOR UPDATE;
   IF NEW.role='ADMIN' THEN SELECT max_admin INTO lim FROM public.account_limits WHERE id=1;
   ELSE SELECT max_staff INTO lim FROM public.account_limits WHERE id=1; END IF;
-  SELECT count(*) INTO n FROM public.users WHERE role=NEW.role AND id IS DISTINCT FROM NEW.id;
+  SELECT count(*) INTO n FROM public.users WHERE role=NEW.role AND deleted_at IS NULL AND id IS DISTINCT FROM NEW.id;
   IF n>=lim THEN RAISE EXCEPTION 'IMS_ACCOUNT_LIMIT_REACHED role=% maximum=%',NEW.role,lim USING ERRCODE='check_violation'; END IF;
   RETURN NEW;
 END $f$;

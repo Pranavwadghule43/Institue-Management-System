@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
-  Building2, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileText, KeyRound, ListChecks, Lock, LockOpen, Plus, Receipt, Search, ShieldCheck, Tags, UserX,
+  Building2, CheckCircle2, ChevronDown, ChevronRight, Copy, Database, FileText, KeyRound, ListChecks, Lock, LockOpen, Pencil, Plus, Receipt, Search, ShieldCheck, Tags, Trash2, UserX,
 } from 'lucide-react';
 import { ADMIN_ONLY, PERMISSIONS, errText, useApp } from '../app/AppContext';
 import { Badge, Confirm, Drawer, Empty, Field, LoadError, Menu, Modal, PageHeader, Pagination, Person, Segmented, SkeletonRows, StatusDot, Switch, pager, useDebounced, usePage } from '../components/ui';
@@ -36,6 +36,10 @@ export function Staff() {
   const { toast, user } = useApp();
   const [reset, setReset] = useState<StaffMember | null>(null);
   const [toggle, setToggle] = useState<StaffMember | null>(null);
+  const [remove, setRemove] = useState<StaffMember | null>(null);
+  const [typed, setTyped] = useState('');
+  const [edit, setEdit] = useState<StaffMember | null>(null);
+  const [ef, setEf] = useState({ full_name: '', mobile: '', designation: '' });
   const [add, setAdd] = useState(false);
   const [temp, setTemp] = useState<{ name: string; password: string } | null>(null);
   const [f, setF] = useState({ full_name: '', username: '', mobile: '', designation: '' });
@@ -60,6 +64,24 @@ export function Staff() {
       setBusy(false);
     }
   };
+  const openEdit = (s: StaffMember) => {
+    setEf({ full_name: s.full_name, mobile: s.mobile ?? '', designation: s.designation ?? '' });
+    setErrs({});
+    setEdit(s);
+  };
+  const saveEdit = async () => {
+    setBusy(true);
+    try {
+      await write(api(`/staff/${edit!.id}`, { method: 'PATCH', body: { full_name: ef.full_name.trim(), mobile: ef.mobile.trim() || null, designation: ef.designation.trim() || null } }));
+      toast('success', 'Details saved', ef.full_name.trim());
+      setEdit(null);
+    } catch (e) {
+      setErrs((e as { fields?: Record<string, string> }).fields ?? {});
+      toast('error', errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   const act = async (s: StaffMember, path: string, msg: string) => {
     try {
       await write(api(`/staff/${s.id}/${path}`, { method: 'POST' }));
@@ -75,9 +97,9 @@ export function Staff() {
         title="Staff"
         sub={lim ? `Accounts that can sign in · ${lim.staff_used} of ${lim.staff_limit} staff accounts used (plus 1 Admin)` : 'Accounts that can sign in.'}
         crumbs={[['Administration'], ['Staff']]}
-        actions={<button className="btn btn-primary" onClick={() => setAdd(true)} disabled={full} title={full ? 'Maximum 4 staff accounts' : undefined}><Plus /> Add staff</button>}
+        actions={<button className="btn btn-primary" onClick={() => setAdd(true)} disabled={full} title={full ? 'All 4 staff accounts are in use. Remove an account to free a slot.' : undefined}><Plus /> Add staff</button>}
       />
-      {full && <div className="callout warning" style={{ marginBottom: 16 }}><Lock /> <span>All {lim!.staff_limit} staff accounts are in use. Disabled accounts still occupy a slot.</span></div>}
+      {full && <div className="callout warning" style={{ marginBottom: 16 }}><Lock /> <span>All {lim!.staff_limit} staff accounts are in use. Disabled accounts still occupy a slot. To add someone new, remove an account you no longer need (⋯ → Remove account).</span></div>}
       <section className="panel">
         {error ? <LoadError error={error} retry={reload} /> : loading ? <SkeletonRows rows={5} cols={6} /> : (
           <div className="table-wrap">
@@ -93,16 +115,20 @@ export function Staff() {
                     <td><StatusDot s={s.status} /></td>
                     <td>{s.last_login_at ? ago(s.last_login_at) : '—'}</td>
                     <td className="ta-r">
-                      {s.id !== user.id && s.role !== 'Admin' && (
-                        <Menu>
-                          <button className="menu__item" onClick={() => setReset(s)}><KeyRound /> Reset password</button>
-                          {s.status === 'Locked' && <button className="menu__item" onClick={() => act(s, 'unlock', 'Account unlocked')}><LockOpen /> Unlock account</button>}
-                          <div className="menu__sep" />
-                          <button className={`menu__item ${s.status !== 'Disabled' ? 'danger' : ''}`} onClick={() => setToggle(s)}>
-                            {s.status === 'Disabled' ? <CheckCircle2 /> : <UserX />} {s.status === 'Disabled' ? 'Enable account' : 'Disable account'}
-                          </button>
-                        </Menu>
-                      )}
+                      <Menu>
+                        <button className="menu__item" onClick={() => openEdit(s)}><Pencil /> Edit details</button>
+                        {s.id !== user.id && s.role !== 'Admin' && (
+                          <>
+                            <button className="menu__item" onClick={() => setReset(s)}><KeyRound /> Reset password</button>
+                            {s.status === 'Locked' && <button className="menu__item" onClick={() => act(s, 'unlock', 'Account unlocked')}><LockOpen /> Unlock account</button>}
+                            <div className="menu__sep" />
+                            <button className={`menu__item ${s.status !== 'Disabled' ? 'danger' : ''}`} onClick={() => setToggle(s)}>
+                              {s.status === 'Disabled' ? <CheckCircle2 /> : <UserX />} {s.status === 'Disabled' ? 'Enable account' : 'Disable account'}
+                            </button>
+                            <button className="menu__item danger" onClick={() => { setTyped(''); setRemove(s); }}><Trash2 /> Remove account</button>
+                          </>
+                        )}
+                      </Menu>
                     </td>
                   </tr>
                 ))}
@@ -127,9 +153,9 @@ export function Staff() {
         open={!!toggle}
         onClose={() => setToggle(null)}
         tone={toggle?.status === 'Disabled' ? 'primary' : 'danger'}
-        icon={<UserX />}
+        icon={toggle?.status === 'Disabled' ? <CheckCircle2 /> : <UserX />}
         title={`${toggle?.status === 'Disabled' ? 'Enable' : 'Disable'} ${toggle?.full_name}?`}
-        body={toggle?.status === 'Disabled' ? 'They will be able to sign in again with their existing permissions.' : 'They are signed out immediately and can’t sign in. The account still counts toward the 4-staff limit.'}
+        body={toggle?.status === 'Disabled' ? 'They will be able to sign in again with their existing permissions.' : 'They are signed out immediately and can’t sign in. The account still counts toward the 4-staff limit. To free the slot, use Remove account instead.'}
         confirmLabel={toggle?.status === 'Disabled' ? 'Enable account' : 'Disable account'}
         onConfirm={async () => {
           const s = toggle!;
@@ -137,6 +163,31 @@ export function Staff() {
           await act(s, s.status === 'Disabled' ? 'activate' : 'deactivate', s.status === 'Disabled' ? 'Account enabled' : 'Account disabled');
         }}
       />
+      <Confirm
+        open={!!remove}
+        onClose={() => setRemove(null)}
+        tone="danger"
+        icon={<Trash2 />}
+        title={`Remove ${remove?.full_name}?`}
+        body={`This closes the account for good and frees a staff slot. They are signed out and can’t sign in again. Their name stays on past receipts, payments and the audit log. The username “${remove?.username}” can’t be used again. This can’t be undone.`}
+        confirmLabel="Remove account"
+        disabled={typed.trim().toLowerCase() !== remove?.username}
+        onConfirm={async () => {
+          const s = remove!;
+          setRemove(null);
+          await act(s, 'remove', 'Account removed');
+        }}
+      >
+        <Field label={`Type ${remove?.username ?? ''} to confirm`} htmlFor="rm"><input id="rm" className="input mono" autoComplete="off" value={typed} onChange={(e) => setTyped(e.target.value)} /></Field>
+      </Confirm>
+      <Drawer open={!!edit} onClose={() => setEdit(null)} title={`Edit ${edit?.full_name ?? ''}`} sub={`Username ${edit?.username ?? ''} can’t be changed`}
+        foot={<><button className="btn btn-secondary" onClick={() => setEdit(null)}>Cancel</button><button className="btn btn-primary" disabled={busy || !ef.full_name.trim()} onClick={saveEdit}>{busy && <span className="spinner" />}Save changes</button></>}>
+        <div className="form-grid">
+          <Field label="Full name" required className="span-2" error={errs.full_name} htmlFor="en"><input id="en" className="input" value={ef.full_name} onChange={(e) => setEf({ ...ef, full_name: e.target.value })} /></Field>
+          <Field label="Mobile" error={errs.mobile} htmlFor="ep"><input id="ep" className="input num" value={ef.mobile} onChange={(e) => setEf({ ...ef, mobile: e.target.value })} /></Field>
+          <Field label="Designation" error={errs.designation} htmlFor="ed"><input id="ed" className="input" placeholder="e.g. Front Desk" value={ef.designation} onChange={(e) => setEf({ ...ef, designation: e.target.value })} /></Field>
+        </div>
+      </Drawer>
       <Drawer open={add} onClose={() => setAdd(false)} title="Add staff member" sub="New staff start with no permissions — grant them on the Permissions page"
         foot={<><button className="btn btn-secondary" onClick={() => setAdd(false)}>Cancel</button><button className="btn btn-primary" disabled={busy || !f.full_name.trim() || !f.username.trim()} onClick={create}>{busy && <span className="spinner" />}Create account</button></>}>
         <div className="form-grid">

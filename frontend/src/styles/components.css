@@ -1359,6 +1359,12 @@ html[data-theme='dark'] .tab.is-active {
   left: 0;
 }
 
+/* Rendered into <body> by <Menu>; top/left are set from the button's position. */
+.menu.menu--floating {
+  position: fixed;
+  right: auto;
+}
+
 .menu__label {
   padding: 8px 10px 4px;
   font-size: 11px;
