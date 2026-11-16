@@ -28,7 +28,7 @@ export interface TimeSlot {
 export interface Enquiry {
   code: string; student_name: string; guardian_name: string | null; mobile: string; email: string | null; address: string | null;
   reference: string | null; aadhaar_masked: string | null; course: { id: number; code: string; name: string } | null;
-  course_subtype: { id: number; name: string } | null; status: EnquiryStatus; handling_staff: Ref | null; created_by: Ref | null;
+  course_subtype: { id: number; name: string } | null; course_subtypes: { id: number; name: string }[]; status: EnquiryStatus; handling_staff: Ref | null; created_by: Ref | null;
   student_code: string | null; created_at: string; updated_at: string;
 }
 export interface EnquiryActivity { at: string; by: Ref | null; action: string; old_status: string | null; status: string; note: string | null }
@@ -42,7 +42,7 @@ export interface Student {
   code: string; full_name: string; guardian_name: string; dob: string; gender: string | null; mobile: string; whatsapp_number: string | null;
   email: string | null; address: string; aadhaar_masked: string | null; education_qualification: string | null; reference: string | null;
   remark: string | null; status: StudentStatus; admission_date: string;
-  course: { id: number; code: string; name: string; duration_months: number | null }; course_subtype: { id: number; name: string } | null;
+  course: { id: number; code: string; name: string; duration_months: number | null }; course_subtype: { id: number; name: string } | null; course_subtypes: { id: number; name: string }[];
   time_slot: { id: number; name: string; timing: string; days: string; faculty: string | null };
   agreed_fee: Money; discount: Money; net_fee: Money; archived: boolean; created_at: string; updated_at: string;
 }

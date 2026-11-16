@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, CheckCircle2, Info, Printer, Save } from 'lucide-react';
 import { errText, useApp } from '../../app/AppContext';
@@ -7,7 +7,8 @@ import { api, newKey, useQuery, write } from '../../api/client';
 import type { Course, Enquiry, FeeSummary, PayMode, Receipt, Student, Subtype, TimeSlot } from '../../api/types';
 import { date, iso, money, n } from '../../lib/format';
 import { PayModePicker } from '../../components/PayModePicker';
-import { addMonthsClamped } from '../../lib/schedule';
+import { PlanEditor, evenPlan, planError, type PlanRow } from '../../components/PlanEditor';
+import { SubtypeChecks, activeOnly } from '../../components/SubtypeChecks';
 
 interface AdmitResult { student: Student; fees: FeeSummary; capacity_warning: boolean; receipt: Receipt | null }
 
@@ -22,14 +23,14 @@ export default function Admission() {
 
   const [f, setF] = useState({
     name: '', fatherName: '', dob: '', gender: 'Male' as 'Male' | 'Female', phone: '', sameWa: true, whatsapp: '', email: '', address: '', aadhaar: '',
-    courseId: '', subtypeId: '', batchId: '', discount: 0 as number | '', initial: '' as number | '', mode: 'Cash' as PayMode, reference: '', installments: 3,
+    courseId: '', subtypeIds: [] as number[], batchId: '', discount: 0 as number | '', initial: '' as number | '', mode: 'Cash' as PayMode, reference: '', installments: 3,
     firstDue: iso(firstDueDefault),
   });
   const [prefilled, setPrefilled] = useState('');
   if (enquiry && prefilled !== enquiry.code) {
     setPrefilled(enquiry.code);
     setF((x) => ({ ...x, name: enquiry.student_name, fatherName: enquiry.guardian_name ?? '', phone: enquiry.mobile, email: enquiry.email ?? '',
-      address: enquiry.address ?? '', courseId: enquiry.course ? String(enquiry.course.id) : '', subtypeId: enquiry.course_subtype ? String(enquiry.course_subtype.id) : '' }));
+      address: enquiry.address ?? '', courseId: enquiry.course ? String(enquiry.course.id) : '', subtypeIds: (enquiry.course_subtypes ?? []).map((x) => x.id) }));
   }
   const { data: courses } = useQuery<Course[]>('/courses', { active: true });
   const { data: subtypes } = useQuery<Subtype[]>(f.courseId ? `/courses/${f.courseId}/subtypes` : null, { active: true });
@@ -48,8 +49,16 @@ export default function Admission() {
   const net = Math.max(0, fee - discount);
   const initial = Number(f.initial || 0);
   const balance = Math.max(0, net - initial);
-  const per = f.installments ? Math.floor(balance / f.installments / 50) * 50 : 0;
   const seats = batch?.seats_left ?? 0;
+  const todayIso = iso(new Date());
+  // 16 Nov (client): dates and amounts can be set by hand. "Number of installments" + "First due date" fill the
+  // table with an even monthly split; any row can then be changed. Hand edits stay until those two are changed.
+  const [plan, setPlan] = useState<PlanRow[]>([]);
+  const [handSet, setHandSet] = useState(false);
+  useEffect(() => {
+    if (!handSet) setPlan(evenPlan(f.installments, f.firstDue, balance));
+  }, [f.installments, f.firstDue, balance, handSet]);
+  const planErr = balance > 0 ? planError(plan, balance, todayIso) : null;
 
   const errors = useMemo(() => {
     const e: Record<string, string> = {};
@@ -66,26 +75,14 @@ export default function Admission() {
     if (f.aadhaar && f.aadhaar.replace(/\D/g, '').length !== 12) e.aadhaar = 'Aadhaar must be 12 digits';
     if (!f.courseId) e.courseId = 'Select a course';
     if (!f.batchId) e.batchId = 'Select a batch';
-    if (balance > 0 && (!Number.isInteger(f.installments) || f.installments < 1 || f.installments > 8)) e.installments = 'Choose 1 to 8 installments';
-    if (balance > 0 && (!f.firstDue || Number.isNaN(new Date(f.firstDue).getTime()))) e.firstDue = 'Choose a valid due date';
+    if (planErr) e.plan = planErr;
     if (discount > fee) e.discount = 'Discount can’t exceed the course fee';
     if (initial > net) e.initial = `Can’t exceed net fee of ${money(net)}`;
     if (initial > 0 && f.mode === 'Bank' && !f.reference.trim()) e.reference = 'UTR / reference is required for bank transfers';
     return e;
-  }, [f, discount, fee, initial, net, balance]);
+  }, [f, discount, fee, initial, net, planErr]);
   const err = (k: string, server?: string) => (submitted ? errors[k] : undefined) ?? (server ? serverErrors[server] : undefined);
 
-  // Preview only (same rule as the server); the saved schedule always comes back from the API.
-  const schedule = useMemo(() => {
-    const rows: { no: number; due: Date; amount: number }[] = [];
-    let alloc = 0;
-    for (let k = 1; k <= f.installments; k++) {
-      const amt = k === f.installments ? balance - alloc : per;
-      alloc += amt;
-      rows.push({ no: k, due: addMonthsClamped(new Date(`${f.firstDue}T00:00:00`), k - 1), amount: amt });
-    }
-    return rows;
-  }, [f.installments, f.firstDue, balance, per]);
 
   const submit = async () => {
     setSubmitted(true);
@@ -102,9 +99,9 @@ export default function Admission() {
         body: {
           full_name: f.name.trim(), guardian_name: f.fatherName.trim(), dob: f.dob, gender: f.gender, mobile: f.phone,
           whatsapp_number: f.sameWa ? null : f.whatsapp || null, email: f.email || null, address: f.address, aadhaar: f.aadhaar || null,
-          course_id: Number(f.courseId), course_subtype_id: f.subtypeId ? Number(f.subtypeId) : null, time_slot_id: Number(f.batchId),
+          course_id: Number(f.courseId), course_subtype_ids: activeOnly(f.subtypeIds, subtypes), time_slot_id: Number(f.batchId),
           discount: String(discount), paid_now: String(initial), payment_mode: initial > 0 ? f.mode : null, payment_reference: f.reference || null,
-          installment_count: balance > 0 ? f.installments : 0, first_due_date: balance > 0 ? f.firstDue : null,
+          installments: balance > 0 ? plan.map((r) => ({ due_date: r.due, amount: String(r.amount) })) : [],
         },
       }));
       setDone(res);
@@ -186,15 +183,9 @@ export default function Admission() {
               </div>
               <div className="form-grid">
                 <Field label="Course" required error={err('courseId', 'course_id')} htmlFor="course" hint={course ? `${course.duration_months ?? '—'} months · ${money(course.fee)}${course.description ? ` · ${course.description}` : ''}` : undefined}>
-                  <select id="course" className="select" value={f.courseId} disabled={!!enquiry?.course} onChange={(e) => setF((x) => ({ ...x, courseId: e.target.value, subtypeId: '', batchId: '' }))}>
+                  <select id="course" className="select" value={f.courseId} disabled={!!enquiry?.course} onChange={(e) => setF((x) => ({ ...x, courseId: e.target.value, subtypeIds: [], batchId: '' }))}>
                     <option value="">Select course…</option>
                     {courses?.map((c) => <option key={c.id} value={c.id}>{c.code} — {c.name}</option>)}
-                  </select>
-                </Field>
-                <Field label="Course sub-type" htmlFor="subtype" error={serverErrors.course_subtype_id}>
-                  <select id="subtype" className="select" value={f.subtypeId} disabled={!f.courseId} onChange={(e) => set('subtypeId', e.target.value)}>
-                    <option value="">None</option>
-                    {subtypes?.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 </Field>
                 <Field label="Batch" required error={err('batchId', 'time_slot_id')} htmlFor="batch" hint={batch ? `${batch.timing} · ${batch.days}${batch.faculty ? ` · ${batch.faculty}` : ''}` : !f.courseId ? 'Choose a course first' : slots && !slots.length ? 'This course has no active time slots yet' : undefined}>
@@ -203,6 +194,7 @@ export default function Admission() {
                     {slots?.map((b) => <option key={b.id} value={b.id}>{b.name} · {b.timing} · {b.seats_left} seats left</option>)}
                   </select>
                 </Field>
+                <SubtypeChecks courseId={f.courseId} value={f.subtypeIds} onChange={(ids) => set('subtypeIds', ids)} error={serverErrors.course_subtype_ids ?? serverErrors.course_subtype_id} />
                 {batch && seats <= 3 && (
                   <div className="callout warning span-2">
                     <AlertTriangle />
@@ -248,14 +240,21 @@ export default function Admission() {
                     )}
                   </>
                 )}
-                <Field label="Number of installments" error={err('installments', 'installment_count')} htmlFor="inst">
-                  <select id="inst" className="select" value={f.installments} onChange={(e) => set('installments', Number(e.target.value))} disabled={balance === 0}>
+                <Field label="Number of installments" hint="Fills the table below with an even monthly split" htmlFor="inst">
+                  <select id="inst" className="select" value={f.installments} onChange={(e) => { setHandSet(false); set('installments', Number(e.target.value)); }} disabled={balance === 0}>
                     {[1, 2, 3, 4, 5, 6, 7, 8].map((k) => <option key={k} value={k}>{k} {k === 1 ? 'installment' : 'installments'}</option>)}
                   </select>
                 </Field>
-                <Field label="First due date" error={err('firstDue', 'first_due_date')} htmlFor="fd">
-                  <input id="fd" type="date" className="input" value={f.firstDue} onChange={(e) => set('firstDue', e.target.value)} disabled={balance === 0} />
+                <Field label="First due date" htmlFor="fd">
+                  <input id="fd" type="date" className="input" min={todayIso} value={f.firstDue} onChange={(e) => { setHandSet(false); set('firstDue', e.target.value); }} disabled={balance === 0} />
                 </Field>
+                {balance > 0 && (
+                  <div className={`field span-2 ${err('plan', 'installments') ? 'has-error' : ''}`} style={{ gridColumn: '1 / -1' }}>
+                    <span className="field__label">Installment dates and amounts <span className="muted" style={{ fontWeight: 400 }}>— change any date or amount</span></span>
+                    <PlanEditor rows={plan} balance={balance} minDate={todayIso} error={err('plan', 'installments')}
+                      onChange={(rows) => { setHandSet(true); setPlan(rows); }} />
+                  </div>
+                )}
               </div>
             </section>
           </div>
@@ -291,15 +290,15 @@ export default function Admission() {
                 <>
                   <div className="row-between" style={{ margin: '16px 0 8px' }}>
                     <h3 style={{ fontSize: 13 }}>Installment schedule</h3>
-                    <span className="muted" style={{ fontSize: 12 }}>{f.installments} × ~{money(per)}</span>
+                    <span className="muted" style={{ fontSize: 12 }}>{plan.length} {plan.length === 1 ? 'installment' : 'installments'}</span>
                   </div>
                   <div className="timeline">
-                    {schedule.map((r) => (
-                      <div className="tl-item" key={r.no} style={{ paddingBottom: 10 }}>
-                        <span className="tl-item__dot primary" style={{ fontSize: 9, fontWeight: 700 }}>{r.no}</span>
+                    {plan.map((r, i) => (
+                      <div className="tl-item" key={i} style={{ paddingBottom: 10 }}>
+                        <span className="tl-item__dot primary" style={{ fontSize: 9, fontWeight: 700 }}>{i + 1}</span>
                         <div className="row-between">
-                          <span style={{ fontSize: 13 }}>{date(r.due)}</span>
-                          <strong className="num" style={{ fontSize: 13 }}>{money(r.amount)}</strong>
+                          <span style={{ fontSize: 13 }}>{r.due ? date(r.due) : '—'}</span>
+                          <strong className="num" style={{ fontSize: 13 }}>{money(Number(r.amount || 0))}</strong>
                         </div>
                       </div>
                     ))}

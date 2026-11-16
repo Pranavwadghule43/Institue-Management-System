@@ -65,7 +65,7 @@ def _issue_receipt(db: Session, s: Student, p: P, user: CurrentUser, previous: D
     snapshot = {
         "receipt_no": code, "issued_at": p.received_at.isoformat(),
         "student": {"code": s.student_code, "name": s.full_name, "guardian": s.guardian_name, "mobile": s.mobile},
-        "course": {"code": s.course.code, "name": s.course.name}, "course_subtype": s.subtype.name if s.subtype else None,
+        "course": {"code": s.course.code, "name": s.course.name}, "course_subtype": ", ".join(st.name for st in s.subtypes) or None,
         # printed on the paper template: joining date, the 8 installment boxes, course expiry (admission + course duration)
         "joining_date": s.admission_date.isoformat(),
         "course_expiry_date": add_months_clamped(s.admission_date, months).isoformat() if months else None,

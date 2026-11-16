@@ -6,7 +6,7 @@ import { useQuery } from '../api/client';
 import type { AuditItem, Followup, Job } from '../api/types';
 import { ago, date, longDate, money, time } from '../lib/format';
 import { feeReminderText, waLink } from '../lib/whatsapp';
-import { DueLabel } from './services/Jobs';
+import { ServiceDateLabel } from './services/Jobs';
 
 interface MyDash {
   fees_collected_today: { amount: string; receipts: number }; bills_closed_today: { amount: string; count: number }; jobs_completed_today: number;
@@ -60,13 +60,13 @@ export default function StaffDashboard() {
             {d.assigned_jobs.length === 0 ? <p className="muted" style={{ padding: 16, fontSize: 13 }}>Nothing assigned to you right now.</p> : (
               <div className="table-wrap">
                 <table className="table">
-                  <thead><tr><th>Job</th><th>Service & customer</th><th>Last date</th><th>Status</th></tr></thead>
+                  <thead><tr><th>Job</th><th>Service & customer</th><th>Service date</th><th>Status</th></tr></thead>
                   <tbody>
                     {d.assigned_jobs.map((j) => (
                       <tr key={j.code} className="is-clickable" onClick={() => nav(`/services/jobs/${j.code}`)}>
                         <td className="id">{j.code}</td>
                         <td style={{ whiteSpace: 'normal' }}><div style={{ fontWeight: 500 }}>{j.services[0]?.name}</div><div className="muted" style={{ fontSize: 12 }}>{j.customer.name}</div></td>
-                        <td><DueLabel j={j} /></td>
+                        <td><ServiceDateLabel j={j} /></td>
                         <td><JobStatusBadge s={j.status} /></td>
                       </tr>
                     ))}

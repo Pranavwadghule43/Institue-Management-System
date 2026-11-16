@@ -6,7 +6,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Header
 from pydantic import Field, model_validator
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from ..common import (
@@ -16,9 +16,10 @@ from ..common import (
 )
 from ..db import get_db
 from ..errors import AppError, bad, conflict, not_found
-from ..ledger import INSTALLMENT_NO_OFFSET, fee_cols, fee_summary, pct
+from ..ledger import INSTALLMENT_NO_OFFSET, fee_cols, fee_summary, pct, reallocate
 from ..models import (
     CourseSubtype, Enquiry, EnquiryActivity, FeeReceipt, FeeReminderEvent, AuditLog, Student, StudentInstallment, StudentPayment,
+    StudentPaymentAllocation,
     StudentTimeSlotHistory, TimeSlot,
 )
 from ..security import CurrentUser, require, require_admin
@@ -44,6 +45,27 @@ def build_schedule(net: Decimal, paid_now: Decimal, count: int, first_due: date 
     return rows
 
 
+class InstallmentIn(In):
+    due_date: date
+    amount: Money
+
+
+def check_plan(rows: list[InstallmentIn], total: Decimal, earliest: date, field: str = "installments") -> None:
+    """16 Nov (client): installment dates and amounts are set by hand. Rules: 1-8 rows, each amount above zero,
+    dates in order and not before the admission date, and together exactly the amount still to be paid."""
+    if not 1 <= len(rows) <= 8:
+        raise bad("INSTALLMENTS_REQUIRED", "Choose 1 to 8 installments for the outstanding balance.", field)
+    if any(r.amount <= 0 for r in rows):
+        raise bad("INSTALLMENT_AMOUNT_INVALID", "Every installment needs an amount above zero.", field)
+    if any(r.due_date < earliest for r in rows):
+        raise bad("INSTALLMENT_DATE_INVALID", f"Installment dates can't be before {earliest.strftime('%d %b %Y')}.", field)
+    if any(b.due_date < a.due_date for a, b in zip(rows, rows[1:])):
+        raise bad("INSTALLMENT_DATES_ORDER", "Put the installments in date order.", field)
+    got = sum((r.amount for r in rows), ZERO)
+    if got != total:
+        raise bad("INSTALLMENTS_TOTAL_MISMATCH", f"Installments add up to {money(got)} but {money(total)} is still to be paid.", field)
+
+
 # ----------------------------------------------------------------- admission
 
 
@@ -60,7 +82,8 @@ class AdmissionIn(In):
     education_qualification: OptStr(200) = None
     remark: OptText = None
     course_id: int
-    course_subtype_id: int | None = None
+    course_subtype_id: int | None = None  # older clients: one sub-type
+    course_subtype_ids: list[int] | None = Field(None, max_length=20)  # 16 Nov: any number of sub-types (checkboxes)
     time_slot_id: int
     discount: Money = ZERO
     paid_now: Money = ZERO
@@ -68,6 +91,7 @@ class AdmissionIn(In):
     payment_reference: OptStr(150) = None
     installment_count: int = Field(0, ge=0, le=8)
     first_due_date: date | None = None
+    installments: list[InstallmentIn] | None = Field(None, max_length=8)  # hand-set plan; replaces count + first date
 
     @model_validator(mode="after")
     def _rules(self):
@@ -89,6 +113,21 @@ def check_course_choice(db: Session, course_id: int | None, subtype_id: int | No
         st = db.get(CourseSubtype, subtype_id)
         if st is None or st.course_id != course_id or not st.is_active:
             raise bad("SUBTYPE_MISMATCH", "Choose a sub-type of the selected course.", "course_subtype_id")
+
+
+def wanted_subtypes(ids: list[int] | None, single: int | None) -> list[int]:
+    """The list wins; otherwise the single sub-type older screens send. Duplicates dropped, order kept."""
+    return list(dict.fromkeys(ids if ids is not None else ([single] if single else [])))
+
+
+def check_subtypes(db: Session, course_id: int | None, ids: list[int]) -> list[CourseSubtype]:
+    for i in ids:
+        check_course_choice(db, course_id, i)
+    return [db.get(CourseSubtype, i) for i in ids]
+
+
+def subtypes_out(items: list[CourseSubtype]) -> list[dict]:
+    return [{"id": st.id, "name": st.name} for st in items]
 
 
 def valid_slot(db: Session, slot_id: int, course_id: int) -> TimeSlot:
@@ -122,7 +161,7 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
         raise conflict("ENQUIRY_ALREADY_CONVERTED", "This enquiry is already converted to a student.")
     if e.course_id and e.course_id != body.course_id:
         raise bad("COURSE_MISMATCH", "The admission course must match the enquiry course.", "course_id")
-    check_course_choice(db, body.course_id, body.course_subtype_id)
+    chosen = check_subtypes(db, body.course_id, wanted_subtypes(body.course_subtype_ids, body.course_subtype_id))
     course = get_course(db, body.course_id)
     slot = valid_slot(db, body.time_slot_id, course.id)
     fee = course.fee
@@ -132,11 +171,16 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
     if body.paid_now > net:
         raise bad("PAID_EXCEEDS_NET_FEE", f"Can't exceed net fee of {money(net)}.", "paid_now")
     rest = net - body.paid_now
-    if rest > 0 and not 1 <= body.installment_count <= 8:
+    if body.installments is not None:  # hand-set dates and amounts
+        if rest == 0 and body.installments:
+            raise bad("INSTALLMENTS_NOT_NEEDED", "No installments are needed when the full fee is paid now.", "installments")
+        if rest > 0:
+            check_plan(body.installments, rest, today())
+    elif rest > 0 and not 1 <= body.installment_count <= 8:
         raise bad("INSTALLMENTS_REQUIRED", "Choose 1 to 8 installments for the outstanding balance.", "installment_count")
     if rest == 0 and body.installment_count:
         raise bad("INSTALLMENTS_NOT_NEEDED", "No installments are needed when the full fee is paid now.", "installment_count")
-    if rest > 0 and body.first_due_date is None:
+    if rest > 0 and body.installments is None and body.first_due_date is None:
         raise bad("FIRST_DUE_DATE_REQUIRED", "Choose a valid first due date.", "first_due_date")
     if body.paid_now > 0 and body.payment_mode == "Bank" and not body.payment_reference:
         raise bad("REFERENCE_REQUIRED", "Transaction / UTR reference is required for bank transfers.", "payment_reference")
@@ -148,18 +192,23 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
         student_code=next_code(db, "STUDENT"), enquiry_id=e.id, full_name=body.full_name, guardian_name=body.guardian_name, dob=body.dob,
         gender=body.gender, mobile=body.mobile, whatsapp_number=body.whatsapp_number or body.mobile, email=body.email, address=body.address,
         education_qualification=body.education_qualification, remark=body.remark, reference=e.reference, course_id=course.id,
-        course_subtype_id=body.course_subtype_id, time_slot_id=slot.id, admission_date=t, status="Active", agreed_fee=fee,
+        course_subtype_id=chosen[0].id if chosen else None, time_slot_id=slot.id, admission_date=t, status="Active", agreed_fee=fee,
         discount=body.discount, net_fee=net, created_by=user.id, **aadhaar)
+    s.subtypes = chosen
     db.add(s)
     db.flush()
-    for no, due, amount in build_schedule(net, body.paid_now, body.installment_count if rest > 0 else 0, body.first_due_date, t):
+    if body.installments is not None:
+        plan = [(0, t, body.paid_now)] + [(k, r.due_date, r.amount) for k, r in enumerate(body.installments if rest > 0 else [], 1)]
+    else:
+        plan = build_schedule(net, body.paid_now, body.installment_count if rest > 0 else 0, body.first_due_date, t)
+    for no, due, amount in plan:
         db.add(StudentInstallment(student_id=s.id, installment_no=no + INSTALLMENT_NO_OFFSET, due_date=due, amount=amount, paid_amount=ZERO))
     old = e.status
     e.status, e.handling_staff_id = "Converted", user.id
     db.add(EnquiryActivity(enquiry_id=e.id, actor_id=user.id, old_status=old, new_status="Converted", note=f"Student {s.student_code} created"))
     audit(db, user.id, "ENQUIRY_CONVERTED", "Enquiry", e.enquiry_code, f"{e.enquiry_code} converted to {s.student_code}")
     audit(db, user.id, "STUDENT_CREATED", "Student", s.student_code, f"Admission confirmed - {s.full_name} ({course.code})",
-          after={"net_fee": money(net), "paid_now": money(body.paid_now), "installments": body.installment_count})
+          after={"net_fee": money(net), "paid_now": money(body.paid_now), "installments": len(plan) - 1})
     db.flush()
     db.refresh(s)
     warn = capacity_warning(db, slot)
@@ -195,7 +244,8 @@ def student_out(s: Student) -> dict:
         "reference": s.reference, "remark": s.remark, "status": s.status, "admission_date": s.admission_date,
         "course": {"id": s.course.id, "code": s.course.code, "name": s.course.name,
                    "duration_months": int(s.course.duration) if (s.course.duration or "").isdigit() else None},
-        "course_subtype": {"id": s.subtype.id, "name": s.subtype.name} if s.subtype else None,
+        "course_subtype": subtypes_out(s.subtypes[:1])[0] if s.subtypes else None,  # first one, for older screens
+        "course_subtypes": subtypes_out(s.subtypes),
         "time_slot": {"id": slot.id, "name": slot.name, "timing": f"{fmt_time(slot.start_time)} – {fmt_time(slot.end_time)}",
                       "days": slot.days_of_week, "faculty": slot.faculty_name},
         "agreed_fee": money(s.agreed_fee), "discount": money(s.discount), "net_fee": money(s.net_fee),
@@ -308,6 +358,7 @@ class StudentPatch(In):
     address: Str(2000) | None = None
     aadhaar: OptAadhaar = None
     course_subtype_id: int | None = None
+    course_subtype_ids: list[int] | None = Field(None, max_length=20)
     education_qualification: OptStr(200) = None
     reference: OptText = None
     remark: OptText = None
@@ -325,8 +376,11 @@ def update_student(code: str, body: StudentPatch, db: Session = Depends(get_db),
             raise bad("FIELD_REQUIRED", f"{k.replace('_', ' ').capitalize()} is required.", k)
     if data.get("dob") and data["dob"] >= today():
         raise bad("INVALID_DOB", "Date of birth must be in the past.", "dob")
-    if "course_subtype_id" in data:
-        check_course_choice(db, s.course_id, data["course_subtype_id"])
+    subtype_change = None
+    if "course_subtype_ids" in data or "course_subtype_id" in data:
+        single = data.pop("course_subtype_id", None)
+        ids = data.pop("course_subtype_ids", None)
+        subtype_change = check_subtypes(db, s.course_id, wanted_subtypes(ids if ids is not None or single else [], single))
     aadhaar_changed = "aadhaar" in data
     if aadhaar_changed:
         data.update(aadhaar_columns(data.pop("aadhaar")))
@@ -335,6 +389,9 @@ def update_student(code: str, body: StudentPatch, db: Session = Depends(get_db),
         before.pop(k, None), after.pop(k, None)
     if aadhaar_changed:
         before["aadhaar"], after["aadhaar"] = "(hidden)", "changed"
+    if subtype_change is not None and [x.id for x in subtype_change] != [x.id for x in s.subtypes]:
+        before["sub_types"], after["sub_types"] = ", ".join(x.name for x in s.subtypes) or "-", ", ".join(x.name for x in subtype_change) or "-"
+        s.subtypes, s.course_subtype_id = subtype_change, subtype_change[0].id if subtype_change else None
     if after:
         audit(db, user.id, "STUDENT_UPDATED", "Student", s.student_code, f"Details updated for {s.full_name}", before, after)
     db.commit()
@@ -422,3 +479,45 @@ def reveal_aadhaar(code: str, db: Session = Depends(get_db), user: CurrentUser =
     audit(db, user.id, "AADHAAR_REVEALED", "Student", s.student_code, f"Aadhaar revealed for {s.full_name}")
     db.commit()
     return {"aadhaar": " ".join(value[i:i + 4] for i in range(0, 12, 4))}
+
+
+# ----------------------------------------------------------------- change the installment plan later (16 Nov, client)
+
+
+class PlanIn(In):
+    installments: list[InstallmentIn] = Field(min_length=1, max_length=8)
+    reason: OptText = None
+
+
+@router.put("/students/{code}/installment-plan")
+def change_installment_plan(code: str, body: PlanIn, db: Session = Depends(get_db), user: CurrentUser = Depends(require("fees.collect"))):
+    """Re-plan what is still to be paid. Money already received never moves: a fully paid installment stays as it is,
+    a part-paid one is closed at the amount received, and the new rows must add up to exactly the balance. The total
+    fee doesn't change. Payments are then re-applied oldest first (reallocate), as after any payment."""
+    s = get_student(db, code, lock=True)
+    rows = db.scalars(select(StudentInstallment).where(StudentInstallment.student_id == s.id).order_by(StudentInstallment.installment_no)).all()
+    before = [{"due_date": r.due_date.isoformat(), "amount": money(r.amount), "paid": money(r.paid_amount)} for r in rows]
+    paid = sum((r.paid_amount for r in rows), ZERO)
+    balance = s.net_fee - paid
+    if balance <= 0:
+        raise conflict("FEES_FULLY_PAID", "This student has paid the full fee; there is nothing left to schedule.")
+    check_plan(body.installments, balance, s.admission_date)
+    keep = [r for r in rows if r.installment_no == INSTALLMENT_NO_OFFSET or r.paid_amount > 0]
+    drop = [r.id for r in rows if r not in keep]
+    db.execute(delete(StudentPaymentAllocation).where(StudentPaymentAllocation.installment_id.in_([r.id for r in rows])))
+    if drop:
+        db.execute(delete(StudentInstallment).where(StudentInstallment.id.in_(drop)))
+    for r in keep:  # a part-paid installment ends at what was received
+        if r.installment_no != INSTALLMENT_NO_OFFSET and r.paid_amount < r.amount:
+            r.amount = r.paid_amount
+    db.flush()
+    nxt = max(r.installment_no for r in keep) + 1
+    for k, r in enumerate(body.installments):
+        db.add(StudentInstallment(student_id=s.id, installment_no=nxt + k, due_date=r.due_date, amount=r.amount, paid_amount=ZERO))
+    db.flush()
+    reallocate(db, s.id)
+    after = [{"due_date": r.due_date.isoformat(), "amount": money(r.amount)} for r in body.installments]
+    audit(db, user.id, "FEE_PLAN_CHANGED", "Student", s.student_code, f"Installment plan changed for {s.full_name}" + (f": {body.reason}" if body.reason else ""),
+          {"schedule": before}, {"remaining": after})
+    db.commit()
+    return fee_summary(db, s, today())

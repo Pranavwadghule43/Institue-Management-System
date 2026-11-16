@@ -32,12 +32,12 @@ class JobIn(In):
     service_ids: list[int] = Field(min_length=1, max_length=50)
     application_name: OptStr(200) = None
     service_date: date | None = None  # default: today
-    due_date: date
+    due_date: date | None = None  # 16 Nov: client dropped "Last date" from New Job; still accepted from older clients
     notes: OptText = None
 
     @model_validator(mode="after")
     def _dates(self):
-        if self.due_date < (self.service_date or today()):
+        if self.due_date is not None and self.due_date < (self.service_date or today()):
             raise ValueError("Last date can't be before the service date")
         return self
 

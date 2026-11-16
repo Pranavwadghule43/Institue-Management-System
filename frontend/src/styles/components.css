@@ -2076,3 +2076,17 @@ html[data-theme='dark'] .toast {
   opacity: 0.5;
   pointer-events: none;
 }
+
+/* Installment plan editor (admission form + student profile) */
+.plan-editor { border: 1px solid var(--line); border-radius: var(--r-md, 8px); overflow: hidden; }
+.plan-editor__table { margin: 0; }
+.plan-editor__table th, .plan-editor__table td { padding: 6px 10px; vertical-align: middle; }
+.plan-editor__table .input, .plan-editor__table .input-group { min-width: 0; width: 100%; }
+.plan-editor__foot { padding: 8px 10px; border-top: 1px solid var(--line); background: var(--surface-2); gap: 12px; flex-wrap: wrap; }
+.plan-editor > .field__error { padding: 0 10px 10px; margin: 0; }
+
+/* Sub-type checkboxes (enquiry, admission, edit student) */
+.subtype-checks { border: 0; padding: 0; margin: 0; min-width: 0; }
+.subtype-checks__list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.subtype-checks__item { padding: 7px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.subtype-checks__item.is-on { border-color: var(--primary-600); background: var(--primary-50); }

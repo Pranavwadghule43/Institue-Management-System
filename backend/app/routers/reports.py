@@ -291,13 +291,12 @@ def _job_rows(db, stmt):
 
 def pending_jobs(db, f):
     t = today()
-    stmt = select(ServiceJob).where(ServiceJob.status.in_((f.job_status,) if f.job_status in OPEN else OPEN)).order_by(ServiceJob.due_date.nulls_last())
+    stmt = select(ServiceJob).where(ServiceJob.status.in_((f.job_status,) if f.job_status in OPEN else OPEN)).order_by(ServiceJob.service_date, ServiceJob.id)
     if f.staff_id:
         stmt = stmt.where(exists().where(ServiceJobStaff.job_id == ServiceJob.id, ServiceJobStaff.user_id == f.staff_id))
     jobs, staff = _job_rows(db, stmt)
     return [{"job": j.job_code, "customer": j.customer.full_name, "services": ", ".join(i.service.name for i in j.items), "status": j.status,
-             "service_date": j.service_date, "last_date": j.due_date, "overdue_days": max(0, (t - j.due_date).days) if j.due_date else 0,
-             "assigned": ", ".join(staff[j.id])} for j in jobs]
+             "service_date": j.service_date, "days_open": max(0, (t - j.service_date).days), "assigned": ", ".join(staff[j.id])} for j in jobs]
 
 
 def completed_jobs(db, f):
@@ -404,9 +403,9 @@ REPORTS = {r.slug: r for r in [
     Report("customer-history", "Customer-wise service history", "Services", "Jobs and paid bill totals per customer",
            [("code", "Customer ID", T), ("customer", "Customer", T), ("mobile", "Mobile", T), ("jobs", "Jobs", I), ("last_visit", "Last visit", D),
             ("paid", "Paid", M)], customer_history, ("q",), dated=False),
-    Report("pending-jobs", "Pending service jobs", "Services", "Open jobs with deadlines",
-           [("job", "Job", T), ("customer", "Customer", T), ("services", "Services", T), ("status", "Status", T), ("service_date", "Received", D),
-            ("last_date", "Last date", D), ("overdue_days", "Days overdue", I), ("assigned", "Assigned", T)], pending_jobs, ("staff_id", "job_status"), dated=False),
+    Report("pending-jobs", "Pending service jobs", "Services", "Open jobs, oldest first",
+           [("job", "Job", T), ("customer", "Customer", T), ("services", "Services", T), ("status", "Status", T), ("service_date", "Service date", D),
+            ("days_open", "Days open", I), ("assigned", "Assigned", T)], pending_jobs, ("staff_id", "job_status"), dated=False),
     Report("completed-jobs", "Completed service jobs", "Services", "Jobs completed in the period",
            [("job", "Job", T), ("customer", "Customer", T), ("services", "Services", T), ("completed", "Completed", DT), ("assigned", "Assigned", T)],
            completed_jobs, ("staff_id",)),

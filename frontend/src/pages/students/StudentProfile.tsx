@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
-  Archive, BookOpen, CalendarDays, CheckCircle2, Clock, Eye, EyeOff, FileText, IndianRupee, MessageCircle, Pencil, Phone, Printer, ReceiptText, UserX,
+  Archive, BookOpen, CalendarClock, CalendarDays, CheckCircle2, Clock, Eye, EyeOff, FileText, IndianRupee, MessageCircle, Pencil, Phone, Printer, ReceiptText, UserX,
 } from 'lucide-react';
 import { errText, useApp } from '../../app/AppContext';
 import {
@@ -12,6 +12,8 @@ import type { FeeSummary, Payment, Ref, Student, Subtype, TimeSlot } from '../..
 import { date, dateTime, iso, money, n, relDays, toDate } from '../../lib/format';
 import { feeReminderText, waLink } from '../../lib/whatsapp';
 import NotFound from '../NotFound';
+import { PlanEditor, planError, type PlanRow } from '../../components/PlanEditor';
+import { SubtypeChecks, activeOnly } from '../../components/SubtypeChecks';
 
 type Tab = 'overview' | 'fees' | 'receipts' | 'activity';
 interface Activity { at: string; type: string; title: string; by: Ref | null; ref?: string | null; note?: string | null; action?: string }
@@ -23,7 +25,7 @@ export default function StudentProfile() {
   const { can, role, toast } = useApp();
   const [tab, setTab] = useState<Tab>('overview');
   const [aadhaar, setAadhaar] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<'' | 'edit' | 'slot' | 'left' | 'completed' | 'archive'>(params.get('edit') ? 'edit' : '');
+  const [dialog, setDialog] = useState<'' | 'edit' | 'slot' | 'left' | 'completed' | 'archive' | 'plan'>(params.get('edit') ? 'edit' : '');
   const { data, error, loading } = useQuery<Profile>(`/students/${id}/profile`);
   if (error?.status === 404) return <NotFound what="student" />;
   if (error) return <LoadError error={error} />;
@@ -194,10 +196,10 @@ export default function StudentProfile() {
                 <dl className="kv-list">
                   <dt>Course</dt>
                   <dd>{s.course.name}</dd>
-                  {s.course_subtype && (
+                  {s.course_subtypes?.length > 0 && (
                     <>
-                      <dt>Sub-type</dt>
-                      <dd>{s.course_subtype.name}</dd>
+                      <dt>{s.course_subtypes.length === 1 ? 'Sub-type' : 'Sub-types'}</dt>
+                      <dd>{s.course_subtypes.map((x) => x.name).join(', ')}</dd>
                     </>
                   )}
                   <dt>Duration</dt>
@@ -220,7 +222,12 @@ export default function StudentProfile() {
 
         {tab === 'fees' && fees && (
           <>
-            <div className="panel__head"><h2>Installment schedule</h2></div>
+            <div className="panel__head">
+              <h2>Installment schedule</h2>
+              {can('fees.collect') && editable && n(fees.balance) > 0 && (
+                <button className="btn btn-secondary btn-sm" onClick={() => setDialog('plan')}><CalendarClock /> Edit installment plan</button>
+              )}
+            </div>
             <div className="table-wrap">
               <table className="table">
                 <thead>
@@ -298,6 +305,7 @@ export default function StudentProfile() {
 
       <EditStudent open={dialog === 'edit'} s={s} onClose={closeDialog} />
       <ChangeSlot open={dialog === 'slot'} s={s} onClose={closeDialog} />
+      {fees && <EditPlan open={dialog === 'plan'} s={s} fees={fees} onClose={closeDialog} />}
       <ReasonDialog
         open={dialog === 'left' || dialog === 'completed' || dialog === 'archive'}
         onClose={closeDialog}
@@ -341,14 +349,17 @@ function ReasonDialog({ open, onClose, title, body, required, confirmLabel, run 
 function EditStudent({ open, s, onClose }: { open: boolean; s: Student; onClose: () => void }) {
   const { toast } = useApp();
   const init = () => ({ full_name: s.full_name, guardian_name: s.guardian_name, dob: s.dob, gender: s.gender ?? 'Male', mobile: s.mobile,
-    whatsapp_number: s.whatsapp_number ?? '', email: s.email ?? '', address: s.address, aadhaar: '', course_subtype_id: s.course_subtype ? String(s.course_subtype.id) : '' });
+    whatsapp_number: s.whatsapp_number ?? '', email: s.email ?? '', address: s.address, aadhaar: '' });
   const [f, setF] = useState(init);
   const [errs, setErrs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  // sub-types are only sent when changed, so an edit never drops one that was made inactive later
+  const [subs, setSubs] = useState<number[] | null>(null);
   const { data: subtypes } = useQuery<Subtype[]>(open ? `/courses/${s.course.id}/subtypes` : null, { active: true });
   useEffect(() => {
     if (open) {
       setF(init());
+      setSubs(null);
       setErrs({});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -357,7 +368,8 @@ function EditStudent({ open, s, onClose }: { open: boolean; s: Student; onClose:
   const save = async () => {
     setBusy(true);
     try {
-      const body: Record<string, unknown> = { ...f, course_subtype_id: f.course_subtype_id ? Number(f.course_subtype_id) : null, whatsapp_number: f.whatsapp_number || f.mobile };
+      const body: Record<string, unknown> = { ...f, whatsapp_number: f.whatsapp_number || f.mobile };
+      if (subs !== null) body.course_subtype_ids = activeOnly(subs, subtypes);
       if (!f.aadhaar) delete body.aadhaar; // blank keeps the stored Aadhaar
       await write(api(`/students/${s.code}`, { method: 'PATCH', body }));
       toast('success', 'Student updated');
@@ -381,8 +393,58 @@ function EditStudent({ open, s, onClose }: { open: boolean; s: Student; onClose:
         <Field label="WhatsApp number" error={errs.whatsapp_number} hint="Blank = same as mobile" htmlFor="e-wa"><input id="e-wa" className="input num" value={f.whatsapp_number} onChange={(e) => set('whatsapp_number', e.target.value)} /></Field>
         <Field label="Email" error={errs.email} htmlFor="e-em"><input id="e-em" className="input" value={f.email} onChange={(e) => set('email', e.target.value)} /></Field>
         <Field label="Aadhaar" error={errs.aadhaar} hint={s.aadhaar_masked ? `Blank keeps ${s.aadhaar_masked}` : 'Optional, 12 digits'} htmlFor="e-ad"><input id="e-ad" className="input num" value={f.aadhaar} onChange={(e) => set('aadhaar', e.target.value)} /></Field>
-        <Field label="Course sub-type" htmlFor="e-st"><select id="e-st" className="select" value={f.course_subtype_id} onChange={(e) => set('course_subtype_id', e.target.value)}><option value="">None</option>{subtypes?.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></Field>
         <Field label="Address" required className="span-2" error={errs.address} htmlFor="e-addr"><textarea id="e-addr" className="textarea" rows={2} value={f.address} onChange={(e) => set('address', e.target.value)} /></Field>
+        <SubtypeChecks courseId={open ? s.course.id : null} value={subs ?? s.course_subtypes.map((x) => x.id)} onChange={setSubs} error={errs.course_subtype_ids ?? errs.course_subtype_id} />
+      </div>
+    </Drawer>
+  );
+}
+
+// 16 Nov (client): change the dates and amounts still to be paid. Money already received stays where it is.
+function EditPlan({ open, s, fees, onClose }: { open: boolean; s: Student; fees: FeeSummary; onClose: () => void }) {
+  const { toast } = useApp();
+  const remaining = (): PlanRow[] => fees.schedule.filter((r) => r.no > 0 && n(r.paid) < n(r.amount)).map((r) => ({ due: r.due_date, amount: n(r.amount) - n(r.paid) }));
+  const [rows, setRows] = useState<PlanRow[]>(remaining);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [tried, setTried] = useState(false);
+  const [serverErr, setServerErr] = useState('');
+  useEffect(() => {
+    if (open) {
+      setRows(remaining());
+      setReason('');
+      setTried(false);
+      setServerErr('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  const balance = n(fees.balance);
+  const settled = fees.schedule.filter((r) => r.no > 0 && n(r.paid) > 0);
+  const problem = planError(rows, balance, s.admission_date);
+  const save = async () => {
+    setTried(true);
+    if (problem) return;
+    setBusy(true);
+    try {
+      await write(api(`/students/${s.code}/installment-plan`, { method: 'PUT', body: { installments: rows.map((r) => ({ due_date: r.due, amount: String(r.amount) })), reason: reason.trim() || null } }));
+      toast('success', 'Installment plan updated', `${rows.length} ${rows.length === 1 ? 'installment' : 'installments'} · ${money(balance)}`);
+      onClose();
+    } catch (e) {
+      setServerErr(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Drawer open={open} onClose={onClose} title="Edit installment plan" sub={`${s.full_name} · ${money(balance)} still to be paid`}
+      foot={<><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={busy} onClick={save}>{busy && <span className="spinner" />}Save plan</button></>}>
+      <div className="stack">
+        <p className="muted" style={{ fontSize: 13, margin: 0 }}>
+          Total fee stays {money(fees.net_fee)}; {money(fees.total_paid)} already received stays as it is.
+          {settled.length > 0 && ` ${settled.length === 1 ? 'Installment 1 keeps' : `Installments 1–${settled.length} keep`} what was paid on ${settled.length === 1 ? 'it' : 'them'}.`}
+        </p>
+        <PlanEditor rows={rows} onChange={setRows} balance={balance} minDate={s.admission_date} startNo={settled.length + 1} error={(tried && problem) || serverErr || null} />
+        <Field label="Reason" hint="Saved in the audit log" htmlFor="ep-r"><textarea id="ep-r" className="textarea" placeholder="e.g. Parent asked to pay on the 10th" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
       </div>
     </Drawer>
   );
