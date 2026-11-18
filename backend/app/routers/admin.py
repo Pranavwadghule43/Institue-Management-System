@@ -53,9 +53,11 @@ def staff_out(u: User) -> dict:
 def account_limit(db: Session) -> dict:
     lim = db.get(AccountLimit, 1)
     max_staff = lim.max_staff if lim else 4
-    # Every Staff row counts, including disabled ones: deactivation does not free a slot (approved rule).
-    used = db.scalar(select(func.count()).where(User.role == "STAFF")) or 0
-    return {"admin_accounts": db.scalar(select(func.count()).where(User.role == "ADMIN")) or 0, "staff_used": used,
+    # Disabled accounts still count: deactivation does not free a slot (approved rule). Removed accounts
+    # (deleted_at set) don't count - removing is how a slot is freed. Same rule as ims_enforce_user_account_limit.
+    current = User.deleted_at.is_(None)
+    used = db.scalar(select(func.count()).where(User.role == "STAFF", current)) or 0
+    return {"admin_accounts": db.scalar(select(func.count()).where(User.role == "ADMIN", current)) or 0, "staff_used": used,
             "staff_limit": max_staff, "staff_remaining": max(0, max_staff - used)}
 
 
@@ -162,6 +164,21 @@ def activate_staff(uid: int, db: Session = Depends(get_db), user: CurrentUser = 
         audit(db, user.id, "STAFF_ACTIVATED", "Staff", str(u.id), f"Staff {u.username} enabled")
     db.commit()
     return staff_out(u)
+
+
+@router.post("/staff/{uid}/remove")
+def remove_staff(uid: int, db: Session = Depends(get_db), user: CurrentUser = Depends(manage_staff)):
+    """Close a Staff account for good and free its slot. The row stays (soft delete) because receipts, payments,
+    jobs and the audit log point at it, so the person's name keeps showing on their past work. Can't be undone,
+    and the username stays reserved."""
+    u = _staff(db, uid)
+    if u.id == user.id or u.role == "ADMIN":
+        raise AppError(400, "CANNOT_CHANGE_ADMIN", "The Admin account can't be removed.")
+    u.is_active, u.deleted_at = False, now()
+    revoke_sessions(db, u.id)  # signed out immediately
+    audit(db, user.id, "STAFF_REMOVED", "Staff", str(u.id), f"Staff account {u.username} ({u.full_name}) removed; slot freed")
+    db.commit()
+    return {"removed": staff_out(u), "account_limit": account_limit(db)}
 
 
 @router.post("/staff/{uid}/unlock")

@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from ..common import (
-    In, OptText, Paging, PayMode, PositiveMoney, Str, apply_changes, audit, like, money, next_code, now, paginate, paging, today,
+    In, OptText, Paging, PayMode, PositiveMoney, Str, apply_changes, audit, like, money, next_code, now, one_trip, paginate, paging, today,
     user_names, user_ref,
 )
 from ..db import get_db
@@ -103,13 +103,15 @@ def expense_summary(db: Session = Depends(get_db), _: CurrentUser = Depends(requ
     prev_first = (first - timedelta(days=1)).replace(day=1)
     live = Expense.deleted_at.is_(None)
 
-    def total(a, b):
-        amt, n = db.execute(select(func.coalesce(func.sum(Expense.amount), 0), func.count()).where(live, Expense.expense_date.between(a, b))).one()
-        return {"amount": money(amt), "count": n}
+    periods = {"today": (t, t), "this_month": (first, t), "last_month": (prev_first, first - timedelta(days=1))}
+    # Sum and count for all three periods in one round trip (performance); same filters as before.
+    got = one_trip(db, *(s for a, b in periods.values() for s in (
+        select(func.coalesce(func.sum(Expense.amount), 0)).where(live, Expense.expense_date.between(a, b)),
+        select(func.count()).where(live, Expense.expense_date.between(a, b)))))
     by_cat = db.execute(select(ExpenseCategory.name, func.sum(Expense.amount)).join(ExpenseCategory).where(live, Expense.expense_date.between(first, t))
                         .group_by(ExpenseCategory.name).order_by(func.sum(Expense.amount).desc())).all()
-    return {"today": total(t, t), "this_month": total(first, t), "last_month": total(prev_first, first - timedelta(days=1)),
-            "this_month_by_category": [{"category": c, "amount": money(a)} for c, a in by_cat]}
+    out = {k: {"amount": money(got[2 * i]), "count": got[2 * i + 1]} for i, k in enumerate(periods)}
+    return out | {"this_month_by_category": [{"category": c, "amount": money(a)} for c, a in by_cat]}
 
 
 @router.post("/expenses", status_code=201)

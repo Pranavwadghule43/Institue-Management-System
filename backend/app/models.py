@@ -232,12 +232,14 @@ class Enquiry(Base):
     aadhaar_lookup_hash: Mapped[str | None] = mapped_column(String(128))
     aadhaar_last4: Mapped[str | None] = mapped_column(String(4))
     course_id: Mapped[int | None] = fk("courses.id")
-    course_subtype_id: Mapped[int | None] = fk("course_subtypes.id")
+    course_subtype_id: Mapped[int | None] = fk("course_subtypes.id")  # first chosen sub-type; full list in enquiry_course_subtypes
     status: Mapped[str] = mapped_column(String(20), server_default=text("'New'"))
     handling_staff_id: Mapped[int | None] = fk("users.id")
     created_by: Mapped[int | None] = fk("users.id")
     created_at: Mapped[datetime] = created()
     updated_at: Mapped[datetime] = updated()
+
+    subtypes: Mapped[list[CourseSubtype]] = relationship(secondary="enquiry_course_subtypes", order_by="CourseSubtype.id")
 
 
 class EnquiryActivity(Base):
@@ -249,6 +251,19 @@ class EnquiryActivity(Base):
     new_status: Mapped[str | None] = mapped_column(String(20))
     note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = created()
+
+
+# 16 Nov (client): a student / enquiry can take several sub-types of the course (e.g. DCA: Advance excel + Tally).
+class EnquiryCourseSubtype(Base):
+    __tablename__ = "enquiry_course_subtypes"
+    enquiry_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("enquiries.id", ondelete="CASCADE"), primary_key=True)
+    course_subtype_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("course_subtypes.id"), primary_key=True)
+
+
+class StudentCourseSubtype(Base):
+    __tablename__ = "student_course_subtypes"
+    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("students.id", ondelete="CASCADE"), primary_key=True)
+    course_subtype_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("course_subtypes.id"), primary_key=True)
 
 
 class Student(Base):
@@ -295,7 +310,8 @@ class Student(Base):
     deleted_at: Mapped[datetime | None] = ts()
 
     course: Mapped[Course] = relationship()
-    subtype: Mapped[CourseSubtype | None] = relationship()
+    subtype: Mapped[CourseSubtype | None] = relationship()  # first chosen; kept in step for older readers
+    subtypes: Mapped[list[CourseSubtype]] = relationship(secondary="student_course_subtypes", order_by="CourseSubtype.id")
     time_slot: Mapped[TimeSlot] = relationship()
 
 

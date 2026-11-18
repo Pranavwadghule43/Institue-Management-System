@@ -7,22 +7,17 @@ import {
 } from '../../components/ui';
 import { api, useQuery, write, type Page } from '../../api/client';
 import type { Customer, Job, JobStatus, Ref, Service, ServiceCategory } from '../../api/types';
-import { date, iso, money, relDays, toDate } from '../../lib/format';
+import { date, iso, money, toDate } from '../../lib/format';
 
 const LANES: JobStatus[] = ['Pending', 'In Process', 'On Hold', 'Completed', 'Cancelled'];
 type JobsPage = Page<Job> & { status_counts: Record<JobStatus, number> };
 
-export function DueLabel({ j }: { j: Job }) {
-  const open = j.status === 'Pending' || j.status === 'In Process' || j.status === 'On Hold';
-  if (!j.due_date) return <span className="due">—</span>;
-  const due = toDate(j.due_date);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const soon = open && !j.overdue && due.getTime() - today.getTime() <= 2 * 86400000;
+// 16 Nov: the client dropped "Last date"; jobs show the day the work was taken in (service date) instead.
+export function ServiceDateLabel({ j }: { j: Job }) {
   return (
-    <span className={`due ${j.overdue ? 'over' : soon ? 'soon' : ''}`} title={`Last date ${date(due)}`}>
+    <span className="due" title={`Service date ${date(toDate(j.service_date))}`}>
       <CalendarClock />
-      {open ? (j.overdue ? `${j.overdue_days}d overdue` : relDays(due)) : date(due)}
+      {date(toDate(j.service_date))}
     </span>
   );
 }
@@ -119,7 +114,7 @@ export default function Jobs() {
             <>
               <div className="table-wrap responsive">
                 <table className="table">
-                  <thead><tr><th>Job</th><th>Customer</th><th>Service</th><th>Assigned</th><th>Last date</th><th>Status</th><th className="ta-r">Amount</th></tr></thead>
+                  <thead><tr><th>Job</th><th>Customer</th><th>Service</th><th>Assigned</th><th>Service date</th><th>Status</th><th className="ta-r">Amount</th></tr></thead>
                   <tbody>
                     {rows.map((j) => (
                       <tr key={j.code} className="is-clickable" onClick={() => nav(`/services/jobs/${j.code}`)}>
@@ -131,7 +126,7 @@ export default function Jobs() {
                           {j.application_name && <div className="muted" style={{ fontSize: 12 }}>{j.application_name}</div>}
                         </td>
                         <td><AssigneeStack people={j.assignees} /></td>
-                        <td><DueLabel j={j} /></td>
+                        <td><ServiceDateLabel j={j} /></td>
                         <td><JobStatusBadge s={j.status} /></td>
                         <td className="ta-r num" style={{ fontWeight: 600 }}>{money(j.amount)}</td>
                       </tr>
@@ -161,7 +156,7 @@ function JobCard({ j }: { j: Job }) {
       <p>{j.customer.name}{j.application_name && ` · ${j.application_name}`}</p>
       <div className="job-card__foot">
         <AssigneeStack people={j.assignees} />
-        <span className="row" style={{ gap: 10 }}><DueLabel j={j} /></span>
+        <span className="row" style={{ gap: 10 }}><ServiceDateLabel j={j} /></span>
       </div>
     </Link>
   );
@@ -171,8 +166,7 @@ function NewJobDrawer({ open, onClose }: { open: boolean; onClose: () => void })
   const { toast } = useApp();
   const nav = useNavigate();
   const today = iso(new Date());
-  const plus7 = iso(new Date(Date.now() + 7 * 86400000));
-  const blank = { customer: null as Customer | null, serviceIds: [] as number[], formName: '', serviceDate: today, lastDate: plus7, note: '' };
+  const blank = { customer: null as Customer | null, serviceIds: [] as number[], formName: '', serviceDate: today, note: '' };
   const [f, setF] = useState(blank);
   const [cq, setCq] = useState('');
   const [submitted, setSubmitted] = useState(false);
@@ -194,7 +188,6 @@ function NewJobDrawer({ open, onClose }: { open: boolean; onClose: () => void })
   const errs = {
     customer: !f.customer ? 'Select or add a customer' : '',
     services: !f.serviceIds.length ? 'Pick at least one service' : '',
-    lastDate: f.lastDate < f.serviceDate ? 'Last date can’t be before the service date' : '',
   };
 
   const save = async () => {
@@ -202,7 +195,7 @@ function NewJobDrawer({ open, onClose }: { open: boolean; onClose: () => void })
     if (Object.values(errs).some(Boolean)) return;
     setBusy(true);
     try {
-      const j = await write(api<Job>('/service-jobs', { method: 'POST', body: { customer_code: f.customer!.code, service_ids: f.serviceIds, application_name: f.formName, service_date: f.serviceDate, due_date: f.lastDate, notes: f.note } }));
+      const j = await write(api<Job>('/service-jobs', { method: 'POST', body: { customer_code: f.customer!.code, service_ids: f.serviceIds, application_name: f.formName, service_date: f.serviceDate, notes: f.note } }));
       toast('success', `Job ${j.code} created`, `${j.services[0]?.name} for ${j.customer.name}`);
       onClose();
       nav(`/services/jobs/${j.code}`);
@@ -281,9 +274,6 @@ function NewJobDrawer({ open, onClose }: { open: boolean; onClose: () => void })
           </Field>
           <Field label="Service date" required htmlFor="sd">
             <input id="sd" type="date" className="input" value={f.serviceDate} onChange={(e) => setF({ ...f, serviceDate: e.target.value })} />
-          </Field>
-          <Field label="Last date" required error={submitted ? errs.lastDate : ''} hint="Deadline for the application" htmlFor="ld">
-            <input id="ld" type="date" className="input" value={f.lastDate} onChange={(e) => setF({ ...f, lastDate: e.target.value })} />
           </Field>
         </div>
 

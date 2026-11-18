@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import {
   AlertCircle, Ban, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Clock, Home,
@@ -238,10 +239,12 @@ export function Drawer({ open, onClose, title, sub, children, foot }: { open: bo
 
 export function Menu({ trigger, children, align = 'right' }: { trigger?: ReactNode; children: ReactNode; align?: 'left' | 'right' }) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<CSSProperties | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
-    const h = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const h = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && !pop.current?.contains(e.target as Node) && setOpen(false);
     const k = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
     document.addEventListener('mousedown', h);
     document.addEventListener('keydown', k);
@@ -250,6 +253,30 @@ export function Menu({ trigger, children, align = 'right' }: { trigger?: ReactNo
       document.removeEventListener('keydown', k);
     };
   }, [open]);
+  // The list floats above the page (portal + position: fixed) so a table's scroll box can't cut it off, and opens
+  // upwards when there isn't room below the button (bottom rows of a table).
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    const place = () => {
+      const a = ref.current?.getBoundingClientRect();
+      const m = pop.current;
+      if (!a || !m) return;
+      const gap = 6, edge = 8, h = m.offsetHeight, w = m.offsetWidth;
+      const below = a.bottom + gap + h <= window.innerHeight - edge || a.top - gap - h < edge;
+      const left = align === 'left' ? a.left : a.right - w;
+      setPos({ top: below ? a.bottom + gap : a.top - gap - h, left: Math.max(edge, Math.min(left, window.innerWidth - w - edge)) });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open, align]);
   return (
     <div className="menu-anchor" ref={ref} onClick={(e) => e.stopPropagation()}>
       <span onClick={() => setOpen((o) => !o)}>
@@ -259,11 +286,13 @@ export function Menu({ trigger, children, align = 'right' }: { trigger?: ReactNo
           </button>
         )}
       </span>
-      {open && (
-        <div className={`menu ${align === 'left' ? 'left' : ''}`} role="menu" onClick={() => setOpen(false)}>
-          {children}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div ref={pop} className="menu menu--floating" role="menu" style={pos ?? { top: 0, left: 0, visibility: 'hidden' }} onClick={() => setOpen(false)}>
+            {children}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

@@ -4,7 +4,8 @@ import { CheckCircle2, Plus, Search } from 'lucide-react';
 import { errText, useApp } from '../../app/AppContext';
 import { Empty, Field, LoadError, PageHeader, Pagination, Panel, SkeletonRows, pager, useDebounced, usePage } from '../../components/ui';
 import { api, useQuery, write, type Page } from '../../api/client';
-import type { Course, Enquiry, EnquiryActivity, EnquiryStatus, Subtype } from '../../api/types';
+import type { Course, Enquiry, EnquiryActivity, EnquiryStatus } from '../../api/types';
+import { SubtypeChecks } from '../../components/SubtypeChecks';
 import { dateTime } from '../../lib/format';
 import NotFound from '../NotFound';
 
@@ -37,7 +38,7 @@ export function EnquiryDashboard() {
         <input className="input" type="date" aria-label="To date" value={to} onChange={(e) => setTo(e.target.value)} />
       </div>
       {error ? <LoadError error={error} retry={reload} /> : loading ? <SkeletonRows rows={5} cols={6} /> : data!.items.length ? <>
-        <div className="table-wrap"><table className="table"><thead><tr><th>Enquiry</th><th>Student</th><th>Course</th><th>Handled by</th><th>Status</th><th>Created</th><th /></tr></thead><tbody>{data!.items.map((e) => <tr key={e.code}><td className="id">{e.code}</td><td>{e.student_name}<div className="muted">{e.mobile}</div></td><td>{e.course?.name ?? 'Undecided'}</td><td>{e.handling_staff?.name ?? '—'}</td><td>{e.status}</td><td>{dateTime(e.created_at)}</td><td><Link className="btn btn-ghost btn-sm" to={`/enquiries/${e.code}`}>Open</Link></td></tr>)}</tbody></table></div>
+        <div className="table-wrap"><table className="table"><thead><tr><th>Enquiry</th><th>Student</th><th>Course</th><th>Handled by</th><th>Status</th><th>Created</th><th /></tr></thead><tbody>{data!.items.map((e) => <tr key={e.code}><td className="id">{e.code}</td><td>{e.student_name}<div className="muted">{e.mobile}</div></td><td>{e.course?.name ?? 'Undecided'}{e.course_subtypes?.length ? <div className="muted" style={{ fontSize: 12 }}>{e.course_subtypes.map((x) => x.name).join(', ')}</div> : null}</td><td>{e.handling_staff?.name ?? '—'}</td><td>{e.status}</td><td>{dateTime(e.created_at)}</td><td><Link className="btn btn-ghost btn-sm" to={`/enquiries/${e.code}`}>Open</Link></td></tr>)}</tbody></table></div>
         <Pagination {...pager(data, setPage)} noun="enquiries" />
       </> : <Empty icon={<Search />} title="No enquiries found" body="Create an enquiry or change the filters." />}
     </Panel>
@@ -48,19 +49,18 @@ export function EnquiryDashboard() {
   </>;
 }
 
-export function CourseSelect({ courseId, subtypeId, onChange, idPrefix }: { courseId: string; subtypeId: string; onChange: (courseId: string, subtypeId: string) => void; idPrefix: string }) {
+export function CourseSelect({ courseId, subtypeIds, onChange, idPrefix }: { courseId: string; subtypeIds: number[]; onChange: (courseId: string, subtypeIds: number[]) => void; idPrefix: string }) {
   const { data: courses } = useQuery<Course[]>('/courses', { active: true });
-  const { data: subtypes } = useQuery<Subtype[]>(courseId ? `/courses/${courseId}/subtypes` : null, { active: true });
   return <>
-    <Field label="Course" htmlFor={`${idPrefix}-course`}><select id={`${idPrefix}-course`} className="select" value={courseId} onChange={(e) => onChange(e.target.value, '')}><option value="">Undecided</option>{courses?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
-    {courseId && <Field label="Course sub-type" htmlFor={`${idPrefix}-sub`}><select id={`${idPrefix}-sub`} className="select" value={subtypeId} onChange={(e) => onChange(courseId, e.target.value)}><option value="">None</option>{subtypes?.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>}
+    <Field label="Course" htmlFor={`${idPrefix}-course`}><select id={`${idPrefix}-course`} className="select" value={courseId} onChange={(e) => onChange(e.target.value, [])}><option value="">Undecided</option>{courses?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
+    <SubtypeChecks courseId={courseId} value={subtypeIds} onChange={(ids) => onChange(courseId, ids)} />
   </>;
 }
 
 export function NewEnquiry() {
   const { toast } = useApp();
   const nav = useNavigate();
-  const [form, setForm] = useState({ student_name: '', mobile: '', guardian_name: '', email: '', address: '', aadhaar: '', reference: '', course_id: '', course_subtype_id: '' });
+  const [form, setForm] = useState({ student_name: '', mobile: '', guardian_name: '', email: '', address: '', aadhaar: '', reference: '', course_id: '', course_subtype_ids: [] as number[] });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -70,7 +70,7 @@ export function NewEnquiry() {
     setBusy(true);
     setError('');
     try {
-      const e = await write(api<Enquiry>('/enquiries', { method: 'POST', body: { ...form, course_id: form.course_id ? Number(form.course_id) : null, course_subtype_id: form.course_subtype_id ? Number(form.course_subtype_id) : null } }));
+      const e = await write(api<Enquiry>('/enquiries', { method: 'POST', body: { ...form, course_id: form.course_id ? Number(form.course_id) : null, course_subtype_ids: form.course_id ? form.course_subtype_ids : [] } }));
       toast('success', 'Enquiry saved', e.code);
       nav(`/enquiries/${e.code}`);
     } catch (err) {
@@ -89,7 +89,7 @@ export function NewEnquiry() {
       <Field label="Address" htmlFor="en-address"><input id="en-address" className="input" value={form.address} onChange={(e) => set('address', e.target.value)} /></Field>
       <Field label="Reference" htmlFor="en-ref"><input id="en-ref" className="input" value={form.reference} onChange={(e) => set('reference', e.target.value)} /></Field>
       <Field label="Aadhaar number (optional)" htmlFor="en-aadhaar" error={errors.aadhaar}><input id="en-aadhaar" className="input" inputMode="numeric" value={form.aadhaar} onChange={(e) => set('aadhaar', e.target.value)} /></Field>
-      <CourseSelect idPrefix="en" courseId={form.course_id} subtypeId={form.course_subtype_id} onChange={(c, s) => setForm((f) => ({ ...f, course_id: c, course_subtype_id: s }))} />
+      <CourseSelect idPrefix="en" courseId={form.course_id} subtypeIds={form.course_subtype_ids} onChange={(c, s) => setForm((f) => ({ ...f, course_id: c, course_subtype_ids: s }))} />
     </div>{error && <p className="field__error" role="alert">{error}</p>}</div><div className="panel__foot"><Link className="btn btn-secondary" to="/enquiries">Cancel</Link><button className="btn btn-primary" disabled={busy} onClick={save}>{busy && <span className="spinner" />}Save enquiry</button></div></section>
   </>;
 }
@@ -119,7 +119,7 @@ export function EnquiryDetail() {
   };
   return <>
     <PageHeader title={`${enquiry.student_name} · ${enquiry.code}`} sub={`Status: ${enquiry.status} · Handled by ${enquiry.handling_staff?.name ?? '—'}`} crumbs={[["Enquiries", "/enquiries"], [enquiry.code]]} actions={enquiry.student_code ? <Link className="btn btn-primary" to={`/students/${enquiry.student_code}`}><CheckCircle2 /> View student</Link> : can('students.create') ? <Link className="btn btn-primary" to={`/students/new?enquiry=${enquiry.code}`}>Confirm admission</Link> : undefined} />
-    <div className="two-col"><Panel title="Enquiry details"><p><strong>Mobile:</strong> {enquiry.mobile}</p>{enquiry.guardian_name && <p><strong>Guardian:</strong> {enquiry.guardian_name}</p>}<p><strong>Course:</strong> {enquiry.course?.name ?? 'Undecided'}{enquiry.course_subtype && ` · ${enquiry.course_subtype.name}`}</p><p><strong>Reference:</strong> {enquiry.reference || '—'}</p>{enquiry.aadhaar_masked && <p><strong>Aadhaar:</strong> {enquiry.aadhaar_masked}</p>}<p><strong>Created:</strong> {dateTime(enquiry.created_at)}</p></Panel>
+    <div className="two-col"><Panel title="Enquiry details"><p><strong>Mobile:</strong> {enquiry.mobile}</p>{enquiry.guardian_name && <p><strong>Guardian:</strong> {enquiry.guardian_name}</p>}<p><strong>Course:</strong> {enquiry.course?.name ?? 'Undecided'}{enquiry.course_subtypes?.length ? ` · ${enquiry.course_subtypes.map((x) => x.name).join(', ')}` : ''}</p><p><strong>Reference:</strong> {enquiry.reference || '—'}</p>{enquiry.aadhaar_masked && <p><strong>Aadhaar:</strong> {enquiry.aadhaar_masked}</p>}<p><strong>Created:</strong> {dateTime(enquiry.created_at)}</p></Panel>
     <Panel title="Follow up"><div className="stack"><select className="select" aria-label="New status" value={status} onChange={(e) => setStatus(e.target.value as Exclude<EnquiryStatus, 'Converted'>)}>{(['New', 'Pending', 'Follow-Up'] as const).map((s) => <option key={s}>{s}</option>)}</select><textarea className="textarea" aria-label="Follow-up notes" placeholder="Follow-up notes" value={note} onChange={(e) => setNote(e.target.value)} /><button className="btn btn-primary" disabled={busy || enquiry.status === 'Converted' || !can('students.create')} onClick={save}>{busy && <span className="spinner" />}Save update</button></div></Panel></div>
     <Panel title="Activity history">{activity?.map((a, i) => <div key={i} className="row-between" style={{ padding: 10, borderBottom: '1px solid var(--line)' }}><span><strong>{a.action}</strong> · {a.status}{a.note && <span className="muted"> · {a.note}</span>}</span><small>{a.by?.name ?? '—'} · {dateTime(a.at)}</small></div>)}</Panel>
   </>;

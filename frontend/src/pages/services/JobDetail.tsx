@@ -9,7 +9,6 @@ import { api, download, useQuery, write } from '../../api/client';
 import type { Job, JobDocument, JobEvent, JobStatus } from '../../api/types';
 import { date, dateTime, money } from '../../lib/format';
 import { INSTITUTE, waLink } from '../../lib/whatsapp';
-import { DueLabel } from './Jobs';
 import NotFound from '../NotFound';
 
 const STATUS_ICON: Record<JobStatus, JSX.Element> = {
@@ -194,8 +193,6 @@ export default function JobDetail() {
             <dl className="kv-list">
               <dt>Service date</dt>
               <dd>{date(j.service_date)}</dd>
-              <dt>Last date</dt>
-              <dd><DueLabel j={j} /></dd>
               {j.application_name && (<><dt>Form</dt><dd>{j.application_name}</dd></>)}
               {j.notes && (<><dt>Notes</dt><dd>{j.notes}</dd></>)}
             </dl>

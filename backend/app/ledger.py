@@ -11,7 +11,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy import and_, case, delete, func, select
 from sqlalchemy.orm import Session
 
-from .common import ZERO, bounds, local_date, money, q2
+from .common import ZERO, bounds, local_date, money, one_trip, q2
 from .errors import AppError
 from .models import Expense, ServiceBill, Student, StudentInstallment as I, StudentPayment as P, StudentPaymentAllocation as A
 
@@ -120,15 +120,24 @@ def reallocate(db: Session, student_id: int) -> None:
 # ----------------------------------------------------------------- income / expense totals
 
 
-def totals(db: Session, d_from: date, d_to: date, staff_id: int | None = None) -> dict:
+def totals_stmts(d_from: date, d_to: date, staff_id: int | None = None) -> tuple:
+    """The three sums behind totals(): fees, services, expenses (so callers can batch them with other counts)."""
     start, end = bounds(d_from, d_to)
     fq = select(func.coalesce(func.sum(P.amount), 0)).where(P.status == "Valid", P.received_at >= start, P.received_at < end)
     sq = select(func.coalesce(func.sum(ServiceBill.grand_total), 0)).where(ServiceBill.status == "Paid", ServiceBill.paid_at >= start, ServiceBill.paid_at < end)
     eq = select(func.coalesce(func.sum(Expense.amount), 0)).where(Expense.deleted_at.is_(None), Expense.expense_date.between(d_from, d_to))
     if staff_id is not None:
         fq, sq, eq = fq.where(P.collected_by == staff_id), sq.where(ServiceBill.paid_by == staff_id), eq.where(Expense.created_by == staff_id)
-    fees, services, expenses = q2(db.scalar(fq)), q2(db.scalar(sq)), q2(db.scalar(eq))
+    return fq, sq, eq
+
+
+def totals_from(fees, services, expenses) -> dict:
+    fees, services, expenses = q2(fees), q2(services), q2(expenses)
     return {"fees": fees, "services": services, "expenses": expenses, "income": fees + services, "net": fees + services - expenses}
+
+
+def totals(db: Session, d_from: date, d_to: date, staff_id: int | None = None) -> dict:
+    return totals_from(*one_trip(db, *totals_stmts(d_from, d_to, staff_id)))  # same three sums, one round trip
 
 
 def month_key(d: date) -> str:

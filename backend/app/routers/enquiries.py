@@ -3,8 +3,9 @@ from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header
+from pydantic import Field
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from ..common import (
     In, Mobile, OptAadhaar, OptEmail, OptStr, OptText, Paging, Str, aadhaar_columns, aadhaar_decrypt, aadhaar_mask, apply_changes, audit,
@@ -12,9 +13,9 @@ from ..common import (
 )
 from ..db import get_db
 from ..errors import conflict, not_found
-from ..models import Course, CourseSubtype, Enquiry, EnquiryActivity, Student, User
+from ..models import Course, Enquiry, EnquiryActivity, Student, User
 from ..security import CurrentUser, require, require_admin
-from .students import AdmissionIn, admit, check_course_choice
+from .students import AdmissionIn, admit, check_subtypes, subtypes_out, wanted_subtypes
 
 router = APIRouter(prefix="/enquiries", tags=["enquiries"])
 STATUSES = ("New", "Pending", "Follow-Up", "Converted")
@@ -30,6 +31,7 @@ class EnquiryIn(In):
     aadhaar: OptAadhaar = None
     course_id: int | None = None
     course_subtype_id: int | None = None
+    course_subtype_ids: list[int] | None = Field(None, max_length=20)  # 16 Nov: several sub-types
 
 
 class EnquiryPatch(In):
@@ -42,6 +44,7 @@ class EnquiryPatch(In):
     aadhaar: OptAadhaar = None
     course_id: int | None = None
     course_subtype_id: int | None = None
+    course_subtype_ids: list[int] | None = Field(None, max_length=20)
 
 
 def _get(db: Session, code: str, lock: bool = False) -> Enquiry:
@@ -52,15 +55,17 @@ def _get(db: Session, code: str, lock: bool = False) -> Enquiry:
     return e
 
 
-def enquiry_out(db: Session, e: Enquiry, names: dict | None = None) -> dict:
+def enquiry_out(db: Session, e: Enquiry, names: dict | None = None, student_codes: dict | None = None) -> dict:
     names = names if names is not None else user_names(db, [e.handling_staff_id, e.created_by])
+    student_code = (student_codes.get(e.id) if student_codes is not None
+                    else db.scalar(select(Student.student_code).where(Student.enquiry_id == e.id)))
     c = db.get(Course, e.course_id) if e.course_id else None
-    st = db.get(CourseSubtype, e.course_subtype_id) if e.course_subtype_id else None
     return {"code": e.enquiry_code, "student_name": e.student_name, "guardian_name": e.guardian_name, "mobile": e.mobile, "email": e.email,
             "address": e.address, "reference": e.reference, "aadhaar_masked": aadhaar_mask(e.aadhaar_last4),
-            "course": {"id": c.id, "code": c.code, "name": c.name} if c else None, "course_subtype": {"id": st.id, "name": st.name} if st else None,
+            "course": {"id": c.id, "code": c.code, "name": c.name} if c else None, "course_subtype": subtypes_out(e.subtypes[:1])[0] if e.subtypes else None,
+            "course_subtypes": subtypes_out(e.subtypes),
             "status": e.status, "handling_staff": user_ref(names, e.handling_staff_id), "created_by": user_ref(names, e.created_by),
-            "student_code": db.scalar(select(Student.student_code).where(Student.enquiry_id == e.id)),
+            "student_code": student_code,
             "created_at": e.created_at, "updated_at": e.updated_at}
 
 
@@ -68,7 +73,7 @@ def enquiry_out(db: Session, e: Enquiry, names: dict | None = None) -> dict:
 def list_enquiries(q: str | None = None, status: Literal["New", "Pending", "Follow-Up", "Converted"] | None = None,
                    created_from: date | None = None, created_to: date | None = None, staff_id: int | None = None,
                    p: Paging = Depends(paging), db: Session = Depends(get_db), _: CurrentUser = Depends(require("students.view"))):
-    stmt = select(Enquiry).order_by(Enquiry.created_at.desc(), Enquiry.id.desc())
+    stmt = select(Enquiry).options(selectinload(Enquiry.subtypes)).order_by(Enquiry.created_at.desc(), Enquiry.id.desc())
     if q:
         stmt = stmt.where(or_(Enquiry.enquiry_code.ilike(like(q)), Enquiry.student_name.ilike(like(q)), Enquiry.mobile.like(like(q.replace(" ", "")))))
     if status:
@@ -79,7 +84,16 @@ def list_enquiries(q: str | None = None, status: Literal["New", "Pending", "Foll
     if staff_id:
         stmt = stmt.where(Enquiry.handling_staff_id == staff_id)
     names = dict(db.execute(select(User.id, User.full_name)).all())
-    return paginate(db, stmt, p, lambda e: enquiry_out(db, e, names))
+    codes: dict[int, str] = {}
+    held: list = []  # the session only remembers objects something still references
+
+    def prefetch(rows):
+        # Whole page in 3 queries instead of 2 per row (N+1). Loaded courses/subtypes stay in the session (held), so
+        # the db.get() calls in enquiry_out find them without another query; student codes are passed in.
+        if ids := {e.course_id for e in rows if e.course_id}:
+            held.extend(db.scalars(select(Course).where(Course.id.in_(ids))).all())
+        codes.update(db.execute(select(Student.enquiry_id, Student.student_code).where(Student.enquiry_id.in_([e.id for e in rows]))).all())
+    return paginate(db, stmt, p, lambda e: enquiry_out(db, e, names, codes), prefetch=prefetch)
 
 
 @router.get("/summary")
@@ -94,9 +108,9 @@ def enquiry_summary(db: Session = Depends(get_db), _: CurrentUser = Depends(requ
 
 @router.post("", status_code=201)
 def create_enquiry(body: EnquiryIn, db: Session = Depends(get_db), user: CurrentUser = Depends(require("students.create"))):
-    check_course_choice(db, body.course_id, body.course_subtype_id)
-    data = body.model_dump(exclude={"aadhaar"})
-    e = Enquiry(enquiry_code=next_code(db, "ENQUIRY"), status="New", handling_staff_id=user.id, created_by=user.id,
+    chosen = check_subtypes(db, body.course_id, wanted_subtypes(body.course_subtype_ids, body.course_subtype_id))
+    data = body.model_dump(exclude={"aadhaar", "course_subtype_ids"}) | {"course_subtype_id": chosen[0].id if chosen else None}
+    e = Enquiry(subtypes=chosen, enquiry_code=next_code(db, "ENQUIRY"), status="New", handling_staff_id=user.id, created_by=user.id,
                 **data, **aadhaar_columns(body.aadhaar))
     db.add(e)
     db.flush()
@@ -117,10 +131,17 @@ def update_enquiry(code: str, body: EnquiryPatch, db: Session = Depends(get_db),
     if e.status == "Converted":
         raise conflict("ENQUIRY_CONVERTED", "Converted enquiries cannot be changed.")
     data = body.model_dump(exclude_unset=True)
-    subtype_id = data.get("course_subtype_id", None if "course_id" in data else e.course_subtype_id)  # new course clears the sub-type
-    if "course_id" in data:
-        data["course_subtype_id"] = subtype_id
-    check_course_choice(db, data.get("course_id", e.course_id), subtype_id)
+    single, ids = data.pop("course_subtype_id", None), data.pop("course_subtype_ids", None)
+    if ids is not None or "course_subtype_id" in body.model_fields_set:
+        want = wanted_subtypes(ids, single)
+    else:
+        want = [] if "course_id" in data else [x.id for x in e.subtypes]  # a new course clears the sub-types
+    chosen = check_subtypes(db, data.get("course_id", e.course_id), want)
+    old_names = None
+    if [x.id for x in chosen] != [x.id for x in e.subtypes]:
+        old_names = ", ".join(x.name for x in e.subtypes) or "-"
+        data["course_subtype_id"] = chosen[0].id if chosen else None
+        e.subtypes = chosen
     aadhaar_changed = "aadhaar" in data
     if aadhaar_changed:
         data.update(aadhaar_columns(data.pop("aadhaar")))
@@ -129,6 +150,9 @@ def update_enquiry(code: str, body: EnquiryPatch, db: Session = Depends(get_db),
         before.pop(k, None), after.pop(k, None)
     if aadhaar_changed:
         before["aadhaar"], after["aadhaar"] = "(hidden)", "changed"
+    if old_names is not None:
+        before.pop("course_subtype_id", None), after.pop("course_subtype_id", None)
+        before["sub_types"], after["sub_types"] = old_names, ", ".join(x.name for x in chosen) or "-"
     if after:
         audit(db, user.id, "ENQUIRY_UPDATED", "Enquiry", e.enquiry_code, f"Enquiry {e.enquiry_code} updated", before, after)
     db.commit()

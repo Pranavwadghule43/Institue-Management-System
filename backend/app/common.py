@@ -179,12 +179,24 @@ def paging(page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100))
     return Paging(page, page_size)
 
 
-def paginate(db: Session, stmt, p: Paging, fn, scalars: bool = True, **extra) -> dict:
+def paginate(db: Session, stmt, p: Paging, fn, scalars: bool = True, prefetch=None, **extra) -> dict:
+    """prefetch(rows), if given, loads whatever fn needs for the whole page in a few batched queries (avoids N+1)."""
     total = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery())) or 0
     res = db.execute(stmt.limit(p.page_size).offset((p.page - 1) * p.page_size))
     rows = res.scalars().all() if scalars else res.all()
+    if prefetch and rows:
+        prefetch(rows)
     return {"items": [fn(r) for r in rows], "page": p.page, "page_size": p.page_size, "total": total,
             "pages": -(-total // p.page_size), **extra}
+
+
+def one_trip(db: Session, *stmts) -> tuple:
+    """Run several single-value SELECTs (counts, sums) in ONE database round trip (performance).
+
+    Same values as calling db.scalar() on each statement in turn: each one becomes a scalar subquery of a single
+    SELECT. Only for statements that return one row (aggregates such as count/sum).
+    """
+    return tuple(db.execute(select(*(s.scalar_subquery() for s in stmts))).one())
 
 
 def user_names(db: Session, ids) -> dict[int, str]:
