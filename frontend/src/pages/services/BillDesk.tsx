@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Ban, Check, FileDown, Lock, MessageCircle, Minus, Pencil, Plus, Printer, RotateCcw, Search, Trash2, X } from 'lucide-react';
 import { errText, useApp } from '../../app/AppContext';
@@ -10,7 +10,7 @@ import { money, n } from '../../lib/format';
 import { PAY_LABEL } from '../../lib/payModes';
 import { billMessage } from '../../lib/whatsapp';
 import { WhatsAppSend } from '../../components/WhatsAppSend';
-import { PrintArea, ServiceBillPrint, billPdf, type BillPrintData } from '../../components/PrintDocs';
+import { PrintArea, ServiceBillPrint, billPdf, billPrintData, type BillPrintData, type ServiceLoginDetails } from '../../components/PrintDocs';
 import { saveFile } from '../../lib/pdf';
 import NotFound from '../NotFound';
 
@@ -25,15 +25,28 @@ let keySeq = 1;
 export default function BillDesk() {
   const { id } = useParams();
   const [params] = useSearchParams();
+  // This ref lives only in the bill desk. The password crosses the save-to-detail
+  // navigation once, without going into browser history or persistent storage.
+  const handoff = useRef<{ code: string; password: string } | null>(null);
+  const takePassword = useCallback((code: string) => {
+    const pending = handoff.current;
+    handoff.current = null;
+    return pending?.code === code ? pending.password : '';
+  }, []);
   const isNew = id === 'new' || !id;
   const { data: bill, error } = useQuery<Bill>(isNew ? null : `/service-bills/${id}`);
   if (error?.status === 404) return <NotFound what="bill" />;
   if (error) return <LoadError error={error} />;
   if (!isNew && !bill) return <SkeletonRows rows={6} cols={4} />;
-  return <Desk key={bill?.code ?? 'new'} bill={bill} initialJob={params.get('job') ?? ''} autoSend={params.get('send') === '1'} />;
+  const initialJob = params.get('job') ?? '';
+  return <Desk key={bill?.code ?? `new:${initialJob}`} bill={bill} initialJob={initialJob} autoSend={params.get('send') === '1'}
+    takePassword={takePassword} carryPassword={(code, password) => { handoff.current = { code, password }; }} />;
 }
 
-function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string; autoSend?: boolean }) {
+function Desk({ bill, initialJob, autoSend, takePassword, carryPassword }: {
+  bill?: Bill; initialJob: string; autoSend?: boolean;
+  takePassword: (code: string) => string; carryPassword: (code: string, password: string) => void;
+}) {
   const { can, role, toast } = useApp();
   const nav = useNavigate();
   const canRate = can('service_bill.rate_override');
@@ -53,7 +66,9 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
   const [flash, setFlash] = useState<number | null>(null);
   const [mode, setMode] = useState<PayMode>('Cash');
   const [reference, setReference] = useState('');
-  const [portal, setPortal] = useState({ user: '', pass: '' });
+  const [draftUsername, setDraftUsername] = useState<string>();
+  const [servicePassword, setServicePassword] = useState('');
+  const [includeLogin, setIncludeLogin] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reason, setReason] = useState('');
@@ -62,6 +77,12 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
   const [shareBill, setShareBill] = useState<Bill | null>(autoSend && bill?.status === 'Paid' ? bill : null);
   const [pdfBusy, setPdfBusy] = useState(false);
   const payKey = useRef(newKey());
+  const code = bill?.code;
+  useEffect(() => {
+    if (!code) return;
+    const carried = takePassword(code);
+    if (carried) setServicePassword(carried);
+  }, [code, takePassword]);
 
   // when a job is picked for a new bill, start from its services at current Service Master rates
   useEffect(() => {
@@ -80,7 +101,10 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
   const sub = lines.reduce((t, l) => t + l.qty * l.rate, 0);
   const disc = Math.min(Number(discount || 0), sub);
   const total = Math.max(0, sub - disc);
-  const dirty = bill ? JSON.stringify(lines.map((l) => [l.serviceId, l.qty, l.rate])) !== JSON.stringify(bill.items.map((i) => [i.service_id, i.quantity, n(i.rate)])) || disc !== n(bill.discount) : lines.length > 0;
+  const serviceUsername = draftUsername ?? bill?.service_login_username ?? '';
+  const username = serviceUsername.trim();
+  const usernameDirty = username !== (bill?.service_login_username ?? '');
+  const dirty = bill ? usernameDirty || JSON.stringify(lines.map((l) => [l.serviceId, l.qty, l.rate])) !== JSON.stringify(bill.items.map((i) => [i.service_id, i.quantity, n(i.rate)])) || disc !== n(bill.discount) : lines.length > 0;
   const discountError = Number(discount || 0) > sub ? 'Discount can’t be more than the subtotal' : '';
 
   /* ---------------- item operations ---------------- */
@@ -118,7 +142,15 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
   };
 
   /* ---------------- persistence (server calculates totals) ---------------- */
-  const body = () => ({ items: lines.map((l) => ({ service_id: l.serviceId, quantity: l.qty, rate: l.rate.toFixed(2) })), discount: disc.toFixed(2) });
+  const body = () => ({
+    items: lines.map((l) => ({ service_id: l.serviceId, quantity: l.qty, rate: l.rate.toFixed(2) })),
+    discount: disc.toFixed(2),
+    ...(usernameDirty ? { service_login_username: username || null } : {}),
+  });
+  const openSavedBill = (b: Bill, auto = false) => {
+    if (servicePassword) carryPassword(b.code, servicePassword);
+    nav(`/services/bills/${b.code}${auto ? '?send=1' : ''}`, { replace: true });
+  };
   const persist = async (): Promise<Bill> => {
     if (!bill) return write(api<Bill>('/service-bills', { method: 'POST', body: { job_code: jobCode, ...body() } }));
     return write(api<Bill>(`/service-bills/${bill.code}`, { method: 'PATCH', body: body() }));
@@ -129,7 +161,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
     try {
       const b = await persist();
       toast('success', bill ? 'Bill updated' : `Bill ${b.code} created`, `${lines.length} item${lines.length > 1 ? 's' : ''} · ${money(b.grand_total)}`);
-      if (!bill) nav(`/services/bills/${b.code}`, { replace: true });
+      if (!bill) openSavedBill(b);
     } catch (e) {
       toast('error', errText(e));
     } finally {
@@ -137,41 +169,43 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
     }
   };
   const pay = async () => {
+    let created: Bill | undefined;
     setBusy(true);
     try {
       const b = dirty || !bill ? await persist() : bill;
+      if (!bill) created = b;
       const paid = await write(api<Bill>(`/service-bills/${b.code}/pay`, { method: 'POST', idempotencyKey: payKey.current, body: { payment_mode: mode, reference: reference || null } }));
       payKey.current = newKey();
       toast('success', 'Payment received', `${paid.code} · ${money(paid.grand_total)} · ${PAY_LABEL[mode]}`);
       setPayOpen(false);
-      if (!bill) nav(`/services/bills/${paid.code}?send=1`, { replace: true });
+      if (!bill) openSavedBill(paid, true);
       else setShareBill(paid);
     } catch (e) {
       toast('error', errText(e));
+      if (created) openSavedBill(created);
     } finally {
       setBusy(false);
     }
   };
 
   const customer = bill?.customer ?? job?.customer;
-  const inst = bill?.institute ?? { name: settings?.institute.name ?? null, tagline: settings?.institute.tagline ?? null, address: settings?.institute.address ?? null, phone: settings?.institute.phone ?? null };
+  const inst = bill?.institute ?? settings?.institute ?? null;
   const work = (bill ? bill.job.application_name : job?.application_name) || lines.map((l) => l.name).join(', ');
-  const print = useMemo(() => ({
+  const print = useMemo<BillPrintData>(() => ({
     billNo: bill?.code ?? 'New (number on save)', date: bill?.created_at ?? new Date().toISOString(), customerName: customer?.name ?? '', mobile: customer?.mobile ?? '',
-    work, portalUser: portal.user, portalPassword: portal.pass, items: lines.map((l) => ({ name: l.name, qty: l.qty, rate: l.rate, amount: l.qty * l.rate })),
-    subtotal: sub, discount: disc, total, inst, status: bill?.status === 'Paid' ? 'paid' as const : bill?.status === 'Cancelled' ? 'cancelled' as const : null,
+    work, serviceLogin: includeLogin && (username || servicePassword) ? { username, password: servicePassword } : undefined,
+    items: lines.map((l) => ({ name: l.name, qty: l.qty, rate: l.rate, amount: l.qty * l.rate })),
+    subtotal: sub, discount: disc, total, inst: inst ?? { name: null, tagline: null, address: null, phone: null },
+    status: bill?.status === 'Paid' ? 'paid' : bill?.status === 'Cancelled' ? 'cancelled' : null,
     paidNote: bill?.payment && bill.paid_at ? `Paid in full by ${bill.payment.mode_label}.` : undefined,
-  }), [bill, customer, work, portal, lines, sub, disc, total, inst]);
+  }), [bill, customer, work, includeLogin, username, servicePassword, lines, sub, disc, total, inst]);
 
-  const sharePrint = useMemo<BillPrintData | null>(() => shareBill ? {
-    ...print,
-    billNo: shareBill.code, date: shareBill.created_at, customerName: shareBill.customer.name, mobile: shareBill.customer.mobile,
-    work: shareBill.job.application_name || shareBill.items.map((item) => item.name).join(', '),
-    items: shareBill.items.map((item) => ({ name: item.name, qty: item.quantity, rate: item.rate, amount: item.line_amount })),
-    subtotal: shareBill.subtotal, discount: shareBill.discount, total: shareBill.grand_total, inst: shareBill.institute,
-    status: shareBill.status === 'Paid' ? 'paid' : null,
-    paidNote: shareBill.payment ? `Paid in full by ${shareBill.payment.mode_label}.` : undefined,
-  } : null, [shareBill, print]);
+  const sharePrint = useMemo(() => shareBill ? billPrintData(shareBill) : null, [shareBill]);
+  const shareLogin = useMemo<ServiceLoginDetails | undefined>(() => (
+    shareBill && (shareBill.service_login_username || servicePassword)
+      ? { username: shareBill.service_login_username, password: servicePassword }
+      : undefined
+  ), [shareBill, servicePassword]);
 
   return (
     <>
@@ -182,7 +216,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
         actions={
           <>
             {bill && bill.status !== 'Cancelled' && can('service_bill.cancel') && <button className="btn btn-danger-soft" onClick={() => { setReason(''); setConfirmNo(''); setCancelOpen(true); }}><Ban /> Cancel bill</button>}
-            {bill && bill.status !== 'Cancelled' && <button className="btn btn-whatsapp" onClick={() => setShareBill(bill)}><MessageCircle /> Send bill on WhatsApp</button>}
+            {bill && bill.status !== 'Cancelled' && <button className="btn btn-whatsapp" disabled={usernameDirty || busy} onClick={() => setShareBill(bill)}><MessageCircle /> Send bill on WhatsApp</button>}
             <button className="btn btn-secondary" disabled={!lines.length || pdfBusy} onClick={async () => { setPdfBusy(true); try { saveFile(await billPdf(print)); } catch (e) { toast('error', 'PDF could not be created', errText(e)); } finally { setPdfBusy(false); } }}>
               {pdfBusy ? <span className="spinner" /> : <FileDown />} Download PDF
             </button>
@@ -203,7 +237,12 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
           {!bill && (
             <div className="billdesk__job">
               <Field label="Service job" required htmlFor="bjob" hint={billable && !billable.items.length ? 'Every open job already has a bill.' : undefined}>
-                <select id="bjob" className="select" value={jobCode} onChange={(e) => setJobCode(e.target.value)}>
+                <select id="bjob" className="select" value={jobCode} onChange={(e) => {
+                  setJobCode(e.target.value);
+                  setDraftUsername(undefined);
+                  setServicePassword('');
+                  setIncludeLogin(false);
+                }}>
                   <option value="">Select a job without a bill…</option>
                   {billable?.items.map((j) => <option key={j.code} value={j.code}>{j.code} · {j.customer.name} · {j.services[0]?.name} ({j.status})</option>)}
                 </select>
@@ -303,8 +342,19 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
 
           <div className="billdesk__job" style={{ borderTop: '1px solid var(--line)' }}>
             <div className="form-grid">
-              <Field label="User name (printed only)" htmlFor="pu" hint="For the customer’s portal login. Not saved anywhere."><input id="pu" className="input" autoComplete="off" value={portal.user} onChange={(e) => setPortal({ ...portal, user: e.target.value })} /></Field>
-              <Field label="Password (printed only)" htmlFor="pp" hint="Typed for this print; never stored."><input id="pp" className="input" autoComplete="off" value={portal.pass} onChange={(e) => setPortal({ ...portal, pass: e.target.value })} /></Field>
+              <Field label="Service login username" htmlFor="pu" hint={bill && usernameDirty ? 'Save changes before sharing the updated username.' : 'Saved with the bill.'}>
+                <input id="pu" className="input" disabled={!editable || busy || pdfBusy} autoComplete="off" autoCapitalize="none" spellCheck={false}
+                  maxLength={256} value={serviceUsername} onChange={(e) => { setDraftUsername(e.target.value); setIncludeLogin(false); }} />
+              </Field>
+              <Field label="Service login password" htmlFor="pp" hint="Kept for this bill session. Enter it again after reopening the bill.">
+                <input id="pp" className="input" type="password" disabled={busy || pdfBusy} autoComplete="new-password" maxLength={256}
+                  value={servicePassword} onChange={(e) => { setServicePassword(e.target.value); setIncludeLogin(false); }} />
+              </Field>
+              <label className="check span-2">
+                <input type="checkbox" checked={includeLogin} disabled={(!username && !servicePassword) || pdfBusy}
+                  onChange={(e) => setIncludeLogin(e.target.checked)} />
+                Include Service Login Details in PDF
+              </label>
             </div>
           </div>
 
@@ -337,7 +387,8 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
       {shareBill && sharePrint && (
         <WhatsAppSend open onClose={() => setShareBill(null)} title={`Send bill ${shareBill.code}`} name={shareBill.customer.name}
           phone={shareBill.customer.whatsapp_number || shareBill.customer.mobile} recordLabel="customer’s profile"
-          message={billMessage(shareBill)} pdf={() => billPdf(sharePrint)}
+          message={billMessage(shareBill)} serviceLogin={shareLogin}
+          pdf={(serviceLogin) => billPdf(serviceLogin ? { ...sharePrint, serviceLogin } : sharePrint)}
           automaticPath={shareBill.status === 'Paid' ? `/service-bills/${shareBill.code}/whatsapp-delivery` : undefined}
           onShared={(event_type) => api(`/service-bills/${shareBill.code}/share-events`, { method: 'POST', body: { event_type } }).catch(() => {})} />
       )}

@@ -114,9 +114,12 @@ def test_receipt_upload_and_verified_delivery(admin, client, student, make_staff
     assert client.get(webhook, params=verify | {"hub.verify_token": "wrong"}).status_code == 403
 
 
-def test_paid_bill_uses_current_customer_whatsapp_and_keeps_payment(admin, catalog, job, graph):
+@pytest.mark.parametrize("include_login", [False, True])
+def test_paid_bill_uses_current_customer_whatsapp_and_keeps_payment(admin, catalog, job, graph, include_login, caplog):
     requests = graph[0]
-    bill = ok(admin.post("/service-bills", json={"job_code": job["code"], "items": [
+    username = 'TEST.USER<&>_' * 15
+    password = 'TEST-PASS<&>"@_!' * 14
+    bill = ok(admin.post("/service-bills", json={"job_code": job["code"], "service_login_username": username, "items": [
         {"service_id": catalog["pan"]["id"], "quantity": 2},
     ]}), 201)
     path = f"/service-bills/{bill['code']}"
@@ -125,9 +128,24 @@ def test_paid_bill_uses_current_customer_whatsapp_and_keeps_payment(admin, catal
     ok(admin.patch(f"/customers/{bill['customer']['code']}", json={"whatsapp_number": "9812000010"}))
     ok(admin.post(path + "/pay", json={"payment_mode": "Cash"}))
     before = ok(admin.get(path))
-    assert ok(admin.post(path + "/whatsapp-delivery", json=attempt))["delivery"]["status"] == "submitted"
+    denied = admin.post(path + "/whatsapp-delivery", json=attempt | {"service_login_password": password})
+    assert denied.status_code == 422 and password not in denied.text
+    overlong = admin.post(path + "/whatsapp-delivery", json=attempt | {
+        "include_service_login": True, "service_login_password": password + "x" * 60,
+    })
+    assert overlong.status_code == 422 and password not in overlong.text and not requests
+    if include_login:
+        attempt |= {"include_service_login": True, "service_login_password": password}
+    sent = admin.post(path + "/whatsapp-delivery", json=attempt)
+    assert ok(sent)["delivery"]["status"] == "submitted" and password not in sent.text
     assert ok(admin.get(path)) == before
-    assert "PAN Card - New" in pdf_text(requests[0])
+    doc = pdf_text(requests[0])
+    assert "PAN Card - New" in doc
+    assert ("Service Login Details" in doc) is include_login
+    compact_doc = "".join(doc.split())
+    assert (username in compact_doc) is include_login
+    assert (password in compact_doc) is include_login
+    assert password not in caplog.text and password not in admin.get("/audit").text
     payload = json.loads(requests[1].content)
     assert payload["to"] == attempt["recipient"] and payload["template"]["name"] == "ims_paid_bill"
 

@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import {
   AlertCircle, Bell, Briefcase, ChevronRight, CornerDownLeft, FileText, KeyRound, LogOut, Menu as MenuIcon,
   Moon, PanelLeftClose, PanelLeftOpen, ReceiptText, Search, Sun, UserRound, Users,
@@ -24,6 +24,7 @@ export function AppShell() {
   const [drawer, setDrawer] = useState(false);
   const [cmdk, setCmdk] = useState(false);
   const loc = useLocation();
+  const billDesk = useMatch('/services/bills/:id');
   const { user, role, can } = useApp();
   const canAdmit = can('students.create');
 
@@ -62,7 +63,7 @@ export function AppShell() {
       <div className="scrim" onClick={() => setDrawer(false)} />
       <div className="main">
         <Topbar onToggleNav={() => setCollapsed((c) => !c)} collapsed={collapsed} onSearch={() => setCmdk(true)} />
-        <main className="content" key={loc.pathname}>
+        <main className="content" key={billDesk ? '/services/bills/:id' : loc.pathname}>
           <Suspense fallback={<div className="denied"><span className="spinner" role="status" aria-label="Loading page" /></div>}>
             <Outlet />
           </Suspense>

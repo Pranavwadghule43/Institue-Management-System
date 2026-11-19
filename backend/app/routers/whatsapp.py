@@ -10,7 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, ValidationError, field_validator, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
@@ -38,13 +38,33 @@ class SendIn(In):
     attempt_id: UUID
 
 
-def source(db: Session, kind: str, code: str, *, lock: bool = False) -> tuple[bool, str | None, dict]:
+class BillSendIn(SendIn):
+    model_config = ConfigDict(str_strip_whitespace=False)
+
+    include_service_login: StrictBool = False
+    service_login_password: Annotated[SecretStr, Field(min_length=1, max_length=256)] | None = None
+
+    @field_validator("service_login_password")
+    @classmethod
+    def single_line_password(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not value.get_secret_value().isprintable():
+            raise ValueError("Enter a single-line password without control characters.")
+        return value
+
+    @model_validator(mode="after")
+    def require_inclusion(self):
+        if self.service_login_password is not None and not self.include_service_login:
+            raise ValueError("Select Include Service Login Details in PDF before passing a password.")
+        return self
+
+
+def source(db: Session, kind: str, code: str, *, lock: bool = False, include_login: bool = False) -> tuple[bool, str | None, dict]:
     if kind == "receipt":
         row = fees.receipt_row(db, code, lock=lock)
         receipt, payment, student = row
         return payment.status == "Valid", cloud.normalize_number(fees.send_to(student)["whatsapp_number"]), receipt.snapshot
     bill = bills.get_bill(db, code, lock=lock, detail=lock)
-    data = bills.bill_out(db, bill) if lock and bill.status == "Paid" else {}
+    data = bills.bill_out(db, bill, include_login_username=include_login) if lock and bill.status == "Paid" else {}
     return bill.status == "Paid", cloud.normalize_number(bill.customer.whatsapp_number or bill.customer.mobile), data
 
 
@@ -78,7 +98,8 @@ def send(db: Session, kind: str, code: str, body: SendIn, user: CurrentUser):
         raise AppError(503, "WHATSAPP_UNAVAILABLE", "Automatic delivery is unavailable. Use Open Chat & Save PDF.")
     if not body.opted_in:
         raise bad("WHATSAPP_CONSENT_REQUIRED", "Confirm the recipient opted in to receiving this document on WhatsApp.")
-    eligible, phone, data = source(db, kind, code, lock=True)
+    include_login = isinstance(body, BillSendIn) and body.include_service_login
+    eligible, phone, data = source(db, kind, code, lock=True, include_login=include_login)
     if not eligible:
         raise conflict("WHATSAPP_DOCUMENT_INELIGIBLE", "Automatic delivery requires a valid receipt or a paid bill.")
     if not phone:
@@ -95,14 +116,19 @@ def send(db: Session, kind: str, code: str, body: SendIn, user: CurrentUser):
         if existing is None:
             raise conflict("WHATSAPP_REQUEST_REUSED", "Refresh and start a new delivery attempt.")
         return summary(eligible, phone, existing)
+    service_login = None
+    if isinstance(body, BillSendIn) and include_login:
+        service_login = (data.get("service_login_username"),
+                         body.service_login_password.get_secret_value() if body.service_login_password is not None else None)
     audit(db, user.id, "WHATSAPP_DOCUMENT_REQUESTED", "WhatsAppDelivery", str(inserted),
-          f"WhatsApp {kind} delivery requested", after={"document": code, "consent_confirmed": True})
+          f"WhatsApp {kind} delivery requested",
+          after={"document": code, "consent_confirmed": True, "service_login_included": bool(service_login and any(service_login))})
     db.commit()  # The durable reservation prevents duplicates, even during a timeout or another request.
 
     filename = f"{'Receipt' if kind == 'receipt' else 'Service-Bill'}-{re.sub(r'[^A-Za-z0-9_-]', '_', code)}.pdf"
     try:
         with timed_operation("document_pdf"):
-            pdf = render_pdf(kind, data, settings.whatsapp_pdf_font)
+            pdf = render_pdf(kind, data, settings.whatsapp_pdf_font, service_login=service_login)
     except Exception as error:
         log.warning("Document PDF error type=%s", type(error).__name__)
         result = cloud.SendResult("failed", "pdf_unavailable")
@@ -134,7 +160,7 @@ def bill_status(code: str, db: Session = Depends(get_db), _: CurrentUser = Depen
 
 
 @router.post("/service-bills/{code}/whatsapp-delivery")
-def send_bill(code: str, body: SendIn, db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_bill.create"))):
+def send_bill(code: str, body: BillSendIn, db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_bill.create"))):
     return send(db, "bill", code, body, user)
 
 

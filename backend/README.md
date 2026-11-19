@@ -48,6 +48,11 @@ a fifth staff account returns `409 STAFF_ACCOUNT_LIMIT_REACHED`, and disabled st
 
 ## Automatic WhatsApp PDFs
 
+Service bills save the service login username. Bill Desk keeps the optional password in memory for the open bill.
+Use **Include Service Login Details in PDF** for print or download, or select it separately in the WhatsApp sharing
+dialog. Re-enter the password after reopening the bill. Automatic WhatsApp delivery receives the password only in the
+authorized delivery request and uses it to render that PDF. Bill records and delivery logs contain no password.
+
 On a browser that supports sharing PDF files, **Share PDF on WhatsApp** passes the generated file to the device's share
 window. The operator chooses WhatsApp and the contact and presses Send. The browser records the handoff as opened.
 **Open Chat & Save PDF** opens the registered number's chat and downloads the PDF for manual attachment when a device share

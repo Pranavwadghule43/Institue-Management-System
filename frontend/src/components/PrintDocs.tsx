@@ -123,10 +123,12 @@ export function FeeReceiptPrint({ r }: { r: ReceiptPrintData }) {
 /* ------------------------------ Service bill ------------------------------ */
 
 export interface BillPrintData {
-  billNo: string; date: string; customerName: string; mobile: string; work: string; portalUser?: string; portalPassword?: string;
+  billNo: string; date: string; customerName: string; mobile: string; work: string; serviceLogin?: ServiceLoginDetails;
   items: { name: string; qty: number; rate: number | string; amount: number | string }[]; subtotal: number | string; discount: number | string;
   total: number | string; inst: InstituteHead; status: 'paid' | 'cancelled' | null; paidNote?: string;
 }
+
+export interface ServiceLoginDetails { username?: string | null; password?: string }
 
 const SERVICES_AVAILABLE = [
   ['Xerox', 'Color Print', 'Photo Print', 'Aadhar Card Print', 'Passport Size Photo', 'Document Scanning', 'Document Lamination', 'Resume / Biodata', 'Eng / Mar Typing', 'PPT Presentation', 'Light Bill'],
@@ -157,8 +159,15 @@ export function ServiceBillPrint({ b }: { b: BillPrintData }) {
           <Fill label="Customer Name -">{b.customerName}</Fill>
           <Fill label="Customer Mobile No -">{b.mobile}</Fill>
           <Fill label="Work -">{b.work}</Fill>
-          <Fill label="User Name Custom Type:">{b.portalUser}</Fill>
-          <Fill label="Password Custom Type:">{b.portalPassword}</Fill>
+          {(b.serviceLogin?.username || b.serviceLogin?.password) && (
+            <section className="doc__service-login" aria-label="Service Login Details">
+              <h2>Service Login Details</h2>
+              <dl>
+                {b.serviceLogin.username && <><dt>Username</dt><dd>{b.serviceLogin.username}</dd></>}
+                {b.serviceLogin.password && <><dt>Password</dt><dd>{b.serviceLogin.password}</dd></>}
+              </dl>
+            </section>
+          )}
           <table className="doc__table">
             <thead>
               <tr><th>Sr No</th><th>Particulars</th><th className="ta-c">QTY</th><th className="ta-r">Rate</th><th className="ta-r">Amount</th></tr>
@@ -214,10 +223,10 @@ export function receiptPrintData(r: Receipt): ReceiptPrintData {
   };
 }
 
-export function billPrintData(b: Bill, portal: { user?: string; pass?: string } = {}): BillPrintData {
+export function billPrintData(b: Bill): BillPrintData {
   return {
     billNo: b.code, date: b.created_at, customerName: b.customer.name, mobile: b.customer.mobile,
-    work: b.job.application_name || b.items.map((i) => i.name).join(', '), portalUser: portal.user, portalPassword: portal.pass,
+    work: b.job.application_name || b.items.map((i) => i.name).join(', '),
     items: b.items.map((i) => ({ name: i.name, qty: i.quantity, rate: i.rate, amount: i.line_amount })), subtotal: b.subtotal, discount: b.discount,
     total: b.grand_total, inst: b.institute, status: b.status === 'Paid' ? 'paid' : b.status === 'Cancelled' ? 'cancelled' : null,
     paidNote: b.payment && b.paid_at ? `Paid in full by ${b.payment.mode_label}.` : undefined,
@@ -238,4 +247,8 @@ function renderDocument(data: Receipt | BillPrintData, node: ReactNode, filename
 }
 
 export const receiptPdf = (r: Receipt) => renderDocument(r, <FeeReceiptPrint r={receiptPrintData(r)} />, `Receipt-${r.receipt_no}.pdf`);
-export const billPdf = (b: BillPrintData) => renderDocument(b, <ServiceBillPrint b={b} />, `Bill-${b.billNo}.pdf`);
+export function billPdf(b: BillPrintData) {
+  const node = <ServiceBillPrint b={b} />;
+  const filename = `Bill-${b.billNo}.pdf`;
+  return b.serviceLogin ? docToPdf(node, filename) : renderDocument(b, node, filename);
+}

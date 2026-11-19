@@ -5,6 +5,7 @@ import { Field, Modal } from './ui';
 import { waLink, waNumber } from '../lib/whatsapp';
 import { saveFile } from '../lib/pdf';
 import { AutomaticWhatsApp } from './AutomaticWhatsApp';
+import type { ServiceLoginDetails } from './PrintDocs';
 
 /** Renders WhatsApp's *bold* / _italic_ markers the way the customer will see them */
 function WaText({ text }: { text: string }) {
@@ -31,15 +32,19 @@ function WaText({ text }: { text: string }) {
 export type PdfShareEvent = 'NATIVE_PDF_SHARE_OPENED' | 'WHATSAPP_OPENED';
 
 export function WhatsAppSend({
-  open, onClose, title, name, phone, message, pdf, onShared, automaticPath, recordLabel = 'record',
+  open, onClose, title, name, phone, message, pdf, serviceLogin, onShared, automaticPath, recordLabel = 'record',
 }: {
-  open: boolean; onClose: () => void; title: string; name: string; phone: string | null | undefined; message: string; pdf: () => Promise<File>;
+  open: boolean; onClose: () => void; title: string; name: string; phone: string | null | undefined; message: string;
+  pdf: (serviceLogin?: ServiceLoginDetails) => Promise<File>; serviceLogin?: ServiceLoginDetails;
   onShared?: (event: PdfShareEvent) => void; recordLabel?: string; automaticPath?: string;
 }) {
   const { user } = useApp();
   const [num, setNum] = useState(phone ?? '');
   const [text, setText] = useState(message);
-  const [file, setFile] = useState<File | null>(null);
+  const [prepared, setPrepared] = useState<{ file: File; login?: ServiceLoginDetails } | null>(null);
+  const [authorizedLogin, setAuthorizedLogin] = useState<ServiceLoginDetails>();
+  const login = authorizedLogin === serviceLogin ? authorizedLogin : undefined;
+  const file = prepared?.login === login ? prepared?.file : undefined;
   const [pdfError, setPdfError] = useState('');
   const [opened, setOpened] = useState<{ blocked: boolean } | null>(null);
   const [native, setNative] = useState<'ready' | 'sharing' | 'opened' | 'failed'>('ready');
@@ -49,22 +54,30 @@ export function WhatsAppSend({
   useEffect(() => {
     if (!open) {
       setManual(null);
+      setAuthorizedLogin(undefined);
+      setPrepared(null);
       return;
     }
     if (automatic) return;
     setNum(phone ?? '');
     setText(message);
-    setFile(null);
-    setPdfError('');
     setOpened(null);
     setNative('ready');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, automatic]);
+
+  useEffect(() => {
+    if (!open || automatic) return;
+    setPrepared(null);
+    setPdfError('');
     let live = true;
-    pdf().then((f) => live && setFile(f)).catch(() => live && setPdfError('The PDF could not be created. Reopen sharing to try again.'));
+    pdf(login).then((f) => live && setPrepared({ file: f, login }))
+      .catch(() => live && setPdfError('The PDF could not be created. Reopen sharing to try again.'));
     return () => {
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, automatic]);
+  }, [open, automatic, login]);
   const { local, problem } = waNumber(num);
   const valid = !problem;
   const nativePdf = file ? { files: [file], text, title } : undefined;
@@ -110,8 +123,16 @@ export function WhatsAppSend({
     }
   };
 
+  const loginOption = serviceLogin ? (disabled: boolean) => (
+    <label className="check">
+      <input type="checkbox" checked={!!login} disabled={disabled}
+        onChange={(e) => setAuthorizedLogin(e.target.checked ? serviceLogin : undefined)} />
+      Include Service Login Details in PDF
+    </label>
+  ) : undefined;
   if (automaticPath && automatic) {
-    return open ? <AutomaticWhatsApp key={automaticPath} path={automaticPath} title={title} onClose={onClose} onManual={showManual} /> : null;
+    return open ? <AutomaticWhatsApp key={automaticPath} path={automaticPath} title={title} onClose={onClose} onManual={showManual}
+      serviceLogin={login} loginOption={loginOption} /> : null;
   }
   return (
     <Modal open={open} onClose={onClose} size="lg">
@@ -160,6 +181,7 @@ export function WhatsAppSend({
               <Field label="Message" htmlFor="watext" hint="You can edit before sending. *text* shows bold, _text_ italic.">
                 <textarea id="watext" className="textarea mono" rows={9} style={{ fontSize: 12.5 }} value={text} onChange={(e) => setText(e.target.value)} />
               </Field>
+              {loginOption?.(native === 'sharing')}
               <div className={`callout ${pdfError ? 'warning' : 'info'}`} style={{ marginTop: 4 }}>
                 <FileText />
                 <span>

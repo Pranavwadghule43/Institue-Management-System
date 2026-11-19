@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header
-from pydantic import Field
+from pydantic import Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -27,15 +27,21 @@ class LineIn(In):
     rate: Money | None = None  # omitted -> Service Master price; any other rate needs service_bill.rate_override
 
 
-class BillIn(In):
+class BillDetails(In):
+    items: list[LineIn] = Field(min_length=1, max_length=100)
+    discount: Money = ZERO
+    service_login_username: OptStr(256) = None
+
+    @field_validator("service_login_username")
+    @classmethod
+    def single_line_username(cls, value: str | None) -> str | None:
+        if value and not value.isprintable():
+            raise ValueError("Enter a single-line username without control characters.")
+        return value
+
+
+class BillIn(BillDetails):
     job_code: Str(40)
-    items: list[LineIn] = Field(min_length=1, max_length=100)
-    discount: Money = ZERO
-
-
-class BillPatch(In):
-    items: list[LineIn] = Field(min_length=1, max_length=100)
-    discount: Money = ZERO
 
 
 class PayIn(In):
@@ -91,12 +97,12 @@ def build_lines(db: Session, items: list[LineIn], discount: Decimal, user: Curre
     return lines, subtotal, discount, overrides
 
 
-def bill_out(db: Session, b: ServiceBill) -> dict:
+def bill_out(db: Session, b: ServiceBill, *, include_login_username: bool = False) -> dict:
     pay = db.scalars(select(ServicePayment).where(ServicePayment.bill_id == b.id)).first()
     names = user_names(db, [b.created_by, b.paid_by, b.cancelled_by] + [i.overridden_by for i in b.items])
     inst = institute(db)
     replaces = db.scalars(select(ServiceBill.bill_code).where(ServiceBill.job_id == b.job_id, ServiceBill.status == "Cancelled", ServiceBill.id != b.id)).all()
-    return {
+    result = {
         "code": b.bill_code, "status": b.status,
         "job": {"code": b.job.job_code, "status": b.job.status, "application_name": b.job.application_name},
         "customer": {"code": b.customer.customer_code, "name": b.customer.full_name, "mobile": b.customer.mobile,
@@ -113,6 +119,9 @@ def bill_out(db: Session, b: ServiceBill) -> dict:
         "institute": {"name": inst.name, "tagline": inst.tagline, "address": inst.address, "phone": inst.phone,
                       "bill_footer": inst.service_bill_footer, "account_note": inst.service_bill_account_note},
     }
+    if include_login_username:
+        result["service_login_username"] = b.service_login_username
+    return result
 
 
 @router.get("")
@@ -149,7 +158,7 @@ def create_bill(body: BillIn, db: Session = Depends(get_db), user: CurrentUser =
         raise conflict("BILL_ALREADY_EXISTS", "This service job already has a current bill.")
     lines, subtotal, discount, overrides = build_lines(db, body.items, body.discount, user)
     b = ServiceBill(bill_code=next_code(db, "BILL"), job_id=job.id, customer_id=job.customer_id, subtotal=subtotal, discount=discount,
-                    grand_total=subtotal - discount, status="Unpaid", created_by=user.id)
+                    grand_total=subtotal - discount, status="Unpaid", created_by=user.id, service_login_username=body.service_login_username)
     db.add(b)
     db.flush()
     for x in lines:
@@ -163,17 +172,21 @@ def create_bill(body: BillIn, db: Session = Depends(get_db), user: CurrentUser =
         audit(db, user.id, "BILL_RATE_OVERRIDDEN", "Service Bill", b.bill_code, f"Rate override on {b.bill_code}", after={"lines": overrides})
     db.commit()
     db.refresh(b)
-    return bill_out(db, b)
+    return bill_out(db, b, include_login_username=True)
 
 
 @router.get("/{code}")
-@router.get("/{code}/print-data")
 def get_bill_api(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(require("service_bill.create"))):
+    return bill_out(db, get_bill(db, code, detail=True), include_login_username=True)
+
+
+@router.get("/{code}/print-data")
+def get_bill_print_data(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(require("service_bill.create"))):
     return bill_out(db, get_bill(db, code, detail=True))
 
 
 @router.patch("/{code}")
-def update_bill(code: str, body: BillPatch, db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_bill.create"))):
+def update_bill(code: str, body: BillDetails, db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_bill.create"))):
     b = get_bill(db, code, lock=True)
     if b.status == "Paid":
         # Approved rule: financial fields lock after payment. Correction = Admin cancel + replacement bill.
@@ -189,6 +202,8 @@ def update_bill(code: str, body: BillPatch, db: Session = Depends(get_db), user:
         x.bill_id = b.id
         db.add(x)
     b.subtotal, b.discount, b.grand_total = subtotal, discount, subtotal - discount
+    if "service_login_username" in body.model_fields_set:
+        b.service_login_username = body.service_login_username
     db.flush()
     db.refresh(b)
     audit(db, user.id, "BILL_UPDATED", "Service Bill", b.bill_code, f"Bill {b.bill_code} updated", before,
@@ -196,7 +211,7 @@ def update_bill(code: str, body: BillPatch, db: Session = Depends(get_db), user:
     if overrides:
         audit(db, user.id, "BILL_RATE_OVERRIDDEN", "Service Bill", b.bill_code, f"Rate override on {b.bill_code}", after={"lines": overrides})
     db.commit()
-    return bill_out(db, b)
+    return bill_out(db, b, include_login_username=True)
 
 
 @router.post("/{code}/pay")
@@ -209,7 +224,7 @@ def pay_bill(code: str, body: PayIn, idempotency_key: str | None = Header(None, 
             if prior.bill_id != b.id:
                 raise conflict("IDEMPOTENCY_KEY_REUSED", "This Idempotency-Key was already used for another bill.")
             db.rollback()
-            return bill_out(db, b) | {"replayed": True}
+            return bill_out(db, b, include_login_username=True) | {"replayed": True}
     if b.status == "Paid":
         raise conflict("BILL_ALREADY_PAID", "This bill is already paid.")
     if b.status == "Cancelled":
@@ -231,7 +246,7 @@ def pay_bill(code: str, body: PayIn, idempotency_key: str | None = Header(None, 
     audit(db, user.id, "BILL_PAID", "Service Bill", b.bill_code, f"Full payment {money(b.grand_total)} received ({body.payment_mode})",
           {"status": "Unpaid"}, {"status": "Paid", "amount": money(b.grand_total), "mode": body.payment_mode})
     db.commit()
-    return bill_out(db, b) | {"replayed": False}
+    return bill_out(db, b, include_login_username=True) | {"replayed": False}
 
 
 @router.post("/{code}/cancel")

@@ -140,6 +140,30 @@
   line-height: 1.25;
   border-bottom: 1px solid #333;
 }
+.doc__service-login {
+  margin: 0 0 3mm;
+  padding: 2mm 2.5mm;
+  border: 1px solid #aeb8c7;
+  background: #f3f6fa;
+  break-inside: avoid;
+}
+.doc__service-login h2 {
+  margin: 0 0 1mm;
+  font-size: 9pt;
+}
+.doc__service-login dl {
+  display: grid;
+  grid-template-columns: 21mm minmax(0, 1fr);
+  gap: 0.7mm 2mm;
+  margin: 0;
+}
+.doc__service-login dt { font-weight: 700; }
+.doc__service-login dd {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.35;
+}
 .doc__gap {
   height: 4mm;
 }

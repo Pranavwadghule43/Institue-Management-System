@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Send, X } from 'lucide-react';
 import { api } from '../api/client';
 import { errText } from '../app/AppContext';
 import { Modal } from './ui';
+import type { ServiceLoginDetails } from './PrintDocs';
 
 const labels = {
   pending: 'Pending provider confirmation', submitted: 'Submitted to WhatsApp', sent: 'Sent',
@@ -23,8 +24,9 @@ function failureText(code: string | null) {
   return code?.startsWith('meta_') ? `WhatsApp reported error ${code.slice(5)}.` : 'WhatsApp reported a delivery failure.';
 }
 
-export function AutomaticWhatsApp({ path, title, onClose, onManual }: {
+export function AutomaticWhatsApp({ path, title, onClose, onManual, serviceLogin, loginOption }: {
   path: string; title: string; onClose: () => void; onManual: (notice?: string) => void;
+  serviceLogin?: ServiceLoginDetails; loginOption?: (disabled: boolean) => ReactNode;
 }) {
   const [view, setView] = useState<Delivery>();
   const [consent, setConsent] = useState(false);
@@ -78,7 +80,10 @@ export function AutomaticWhatsApp({ path, title, onClose, onManual }: {
       const data = await api<Delivery>(path, {
         method: 'POST',
         signal: AbortSignal.timeout(40000),
-        body: { opted_in: true, recipient: phone, attempt_id: crypto.randomUUID() },
+        body: {
+          opted_in: true, recipient: phone, attempt_id: crypto.randomUUID(),
+          ...(serviceLogin ? { include_service_login: true, service_login_password: serviceLogin.password || undefined } : {}),
+        },
       });
       setView(data);
     } catch (e) {
@@ -111,6 +116,7 @@ export function AutomaticWhatsApp({ path, title, onClose, onManual }: {
           <input type="checkbox" checked={consent} disabled={busy} onChange={(event) => setConsent(event.target.checked)} />
           The recipient opted in to receive this PDF at this WhatsApp number.
         </label>}
+        {canSend && loginOption?.(busy)}
       </div>
       <div className="modal__foot">
         <button className="btn btn-secondary" disabled={busy || alreadyRequested || (!view && !error)} onClick={() => onManual()}>Manual PDF sharing</button>

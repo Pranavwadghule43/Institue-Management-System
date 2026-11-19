@@ -87,7 +87,6 @@ export default function App() {
             <Route path="services/customers" element={<Guard perm="customers.view"><Customers /></Guard>} />
             <Route path="services/customers/:id" element={<Guard perm="customers.view"><CustomerProfile /></Guard>} />
             <Route path="services/bills" element={<Guard perm="service_bill.create"><Bills /></Guard>} />
-            <Route path="services/bills/new" element={<Guard perm="service_bill.create"><BillDesk /></Guard>} />
             <Route path="services/bills/:id" element={<Guard perm="service_bill.create"><BillDesk /></Guard>} />
             <Route path="services/master" element={<Guard perm="service_master.manage"><ServiceMaster /></Guard>} />
             <Route path="expenses" element={<Guard perm="expenses.view"><Expenses /></Guard>} />

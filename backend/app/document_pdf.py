@@ -8,7 +8,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .common import local_date
 
@@ -21,21 +21,25 @@ def register_font(path: str) -> str:
     return "IMSDocument"
 
 
-def render_pdf(kind: str, data: dict, font_path: str) -> bytes:
+def render_pdf(kind: str, data: dict, font_path: str, *, service_login: tuple[str | None, str | None] | None = None) -> bytes:
     institute = data["institute"]
     font = register_font(font_path)
     base = ParagraphStyle("body", fontName=font, fontSize=10, leading=15, shaping=bool(font_path))
     title = ParagraphStyle("title", parent=base, fontSize=21, leading=26, textColor=colors.HexColor("#17345A"))
     heading = ParagraphStyle("heading", parent=base, fontSize=13, leading=18, textColor=colors.HexColor("#17345A"))
 
-    def para(value, style=base):
+    def para(value, style=base, *, preserve_spaces=False):
         value = str(value)
         if not font_path:
             value.encode("cp1252")  # fail clearly rather than producing missing glyphs
-        return Paragraph(escape(value).replace("\n", "<br/>"), style)
+        markup = escape(value).replace("\n", "<br/>")
+        if preserve_spaces:
+            markup = markup.replace(" ", "&#160;")
+        return Paragraph(markup, style)
 
-    def table(rows, widths, header=False):
-        grid = Table([[para(cell) for cell in row] for row in rows], colWidths=widths, repeatRows=int(header))
+    def table(rows, widths, header=False, *, preserve_spaces=False):
+        grid = Table([[para(cell, preserve_spaces=preserve_spaces) for cell in row] for row in rows],
+                     colWidths=widths, repeatRows=int(header))
         grid.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor("#D6E0EB")),
@@ -88,6 +92,10 @@ def render_pdf(kind: str, data: dict, font_path: str) -> bytes:
             details(("Subtotal (INR)", data["subtotal"]), ("Discount (INR)", data["discount"]),
                     ("Total paid (INR)", data["grand_total"]), ("Amount in words", data["amount_in_words"])),
         ])
+        if service_login and any(service_login):
+            rows = [(label, value) for label, value in zip(("Username", "Password"), service_login) if value]
+            story.append(KeepTogether([Spacer(1, 12), para("Service Login Details", heading),
+                                       table(rows, [135, 365], preserve_spaces=True)]))
         footer = institute.get("bill_footer")
     if footer:
         story.extend([Spacer(1, 12), para(footer)])

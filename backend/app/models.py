@@ -567,6 +567,7 @@ class ServiceBill(Base):
     subtotal: Mapped[Decimal] = mapped_column(MONEY, server_default=text("0"))
     discount: Mapped[Decimal] = mapped_column(MONEY, server_default=text("0"))
     grand_total: Mapped[Decimal] = mapped_column(MONEY, server_default=text("0"))
+    service_login_username: Mapped[str | None] = mapped_column(String(256))
     status: Mapped[str] = mapped_column(String(20), server_default=text("'Unpaid'"))
     created_by: Mapped[int | None] = fk("users.id")
     paid_by: Mapped[int | None] = fk("users.id")

@@ -99,6 +99,7 @@ export interface BillLine {
 }
 export interface Bill {
   code: string; status: BillStatus; job: { code: string; status: JobStatus; application_name: string | null };
+  service_login_username?: string | null;
   customer: { code: string; name: string; mobile: string; whatsapp_number: string }; items: BillLine[]; units: number; subtotal: Money;
   discount: Money; grand_total: Money; amount_in_words: string; created_by: Ref | null; created_at: string; paid_by: Ref | null;
   paid_at: string | null; payment: { amount: Money; mode: PayMode; mode_label: string; reference: string | null } | null;
