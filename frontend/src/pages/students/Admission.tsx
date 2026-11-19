@@ -9,6 +9,7 @@ import { date, iso, money, n } from '../../lib/format';
 import { PayModePicker } from '../../components/PayModePicker';
 import { PlanEditor, evenPlan, planError, type PlanRow } from '../../components/PlanEditor';
 import { SubtypeChecks, activeOnly } from '../../components/SubtypeChecks';
+import { eligibleTimeSlots } from '../../lib/schedule';
 
 interface AdmitResult { student: Student; fees: FeeSummary; capacity_warning: boolean; receipt: Receipt | null }
 
@@ -30,11 +31,12 @@ export default function Admission() {
   if (enquiry && prefilled !== enquiry.code) {
     setPrefilled(enquiry.code);
     setF((x) => ({ ...x, name: enquiry.student_name, fatherName: enquiry.guardian_name ?? '', phone: enquiry.mobile, email: enquiry.email ?? '',
-      address: enquiry.address ?? '', courseId: enquiry.course ? String(enquiry.course.id) : '', subtypeIds: (enquiry.course_subtypes ?? []).map((x) => x.id) }));
+      address: enquiry.address ?? '', courseId: enquiry.course ? String(enquiry.course.id) : '', subtypeIds: (enquiry.course_subtypes ?? []).map((x) => x.id), batchId: '' }));
   }
   const { data: courses } = useQuery<Course[]>('/courses', { active: true });
-  const { data: subtypes } = useQuery<Subtype[]>(f.courseId ? `/courses/${f.courseId}/subtypes` : null, { active: true });
-  const { data: slots } = useQuery<TimeSlot[]>(f.courseId ? '/time-slots' : null, { course_id: f.courseId, active: true, include_completed: false });
+  const { data: subtypes, error: subtypeError } = useQuery<Subtype[]>(f.courseId ? `/courses/${f.courseId}/subtypes` : null, { active: true });
+  const { data: slots, error: slotError, loading: slotsLoading, reload: reloadSlots } =
+    useQuery<TimeSlot[]>(f.courseId ? '/time-slots' : null, { course_id: f.courseId, active: true, include_completed: false });
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
@@ -43,7 +45,15 @@ export default function Admission() {
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((x) => ({ ...x, [k]: v }));
 
   const course = courses?.find((c) => String(c.id) === f.courseId) ?? null;
-  const batch = slots?.find((s) => String(s.id) === f.batchId) ?? null;
+  const selectedSubtypeIds = activeOnly(f.subtypeIds, subtypes);
+  const selectedSubtypes = subtypes?.filter((s) => selectedSubtypeIds.includes(s.id)) ?? [];
+  const eligible = eligibleTimeSlots(slots, Number(f.courseId), selectedSubtypeIds);
+  const batch = eligible?.find((s) => String(s.id) === f.batchId) ?? null;
+  const changeSubtypes = (ids: number[]) => setF((current) => ({
+    ...current,
+    subtypeIds: ids,
+    batchId: eligibleTimeSlots(slots, Number(current.courseId), ids)?.some((slot) => String(slot.id) === current.batchId) ? current.batchId : '',
+  }));
   const fee = n(course?.fee);
   const discount = Number(f.discount || 0);
   const net = Math.max(0, fee - discount);
@@ -74,13 +84,14 @@ export default function Admission() {
     if (!f.address.trim()) e.address = 'Address is required';
     if (f.aadhaar && f.aadhaar.replace(/\D/g, '').length !== 12) e.aadhaar = 'Aadhaar must be 12 digits';
     if (!f.courseId) e.courseId = 'Select a course';
-    if (!f.batchId) e.batchId = 'Select a batch';
+    if (!batch) e.batchId = 'Select a compatible batch';
+    if (f.subtypeIds.length && (!subtypes || subtypeError)) e.subtypes = 'Wait for the course subtypes to load';
     if (planErr) e.plan = planErr;
     if (discount > fee) e.discount = 'Discount can’t exceed the course fee';
     if (initial > net) e.initial = `Can’t exceed net fee of ${money(net)}`;
     if (initial > 0 && f.mode === 'Bank' && !f.reference.trim()) e.reference = 'UTR / reference is required for bank transfers';
     return e;
-  }, [f, discount, fee, initial, net, planErr]);
+  }, [f, batch, subtypes, subtypeError, discount, fee, initial, net, planErr]);
   const err = (k: string, server?: string) => (submitted ? errors[k] : undefined) ?? (server ? serverErrors[server] : undefined);
 
 
@@ -99,7 +110,7 @@ export default function Admission() {
         body: {
           full_name: f.name.trim(), guardian_name: f.fatherName.trim(), dob: f.dob, gender: f.gender, mobile: f.phone,
           whatsapp_number: f.sameWa ? null : f.whatsapp || null, email: f.email || null, address: f.address, aadhaar: f.aadhaar || null,
-          course_id: Number(f.courseId), course_subtype_ids: activeOnly(f.subtypeIds, subtypes), time_slot_id: Number(f.batchId),
+          course_id: Number(f.courseId), course_subtype_ids: selectedSubtypeIds, time_slot_id: Number(f.batchId),
           discount: String(discount), paid_now: String(initial), payment_mode: initial > 0 ? f.mode : null, payment_reference: f.reference || null,
           installments: balance > 0 ? plan.map((r) => ({ due_date: r.due, amount: String(r.amount) })) : [],
         },
@@ -188,13 +199,17 @@ export default function Admission() {
                     {courses?.map((c) => <option key={c.id} value={c.id}>{c.code} — {c.name}</option>)}
                   </select>
                 </Field>
-                <Field label="Batch" required error={err('batchId', 'time_slot_id')} htmlFor="batch" hint={batch ? `${batch.timing} · ${batch.days}${batch.faculty ? ` · ${batch.faculty}` : ''}` : !f.courseId ? 'Choose a course first' : slots && !slots.length ? 'This course has no active time slots yet' : undefined}>
-                  <select id="batch" className="select" value={f.batchId} disabled={!f.courseId} onChange={(e) => set('batchId', e.target.value)}>
+                <SubtypeChecks courseId={f.courseId} value={f.subtypeIds} onChange={changeSubtypes} error={err('subtypes') ?? serverErrors.course_subtype_ids ?? serverErrors.course_subtype_id} />
+                <Field label="Batch" required error={err('batchId', 'time_slot_id')} htmlFor="batch"
+                  hint={slotError ? <button type="button" className="btn btn-ghost btn-sm" onClick={reloadSlots}>Could not load time slots. Retry</button>
+                    : batch ? `${batch.timing} · ${batch.days}${batch.faculty ? ` · ${batch.faculty}` : ''}`
+                      : !f.courseId ? 'Choose a course first' : slotsLoading ? 'Loading time slots…'
+                        : eligible?.length === 0 ? 'No active time slots match these subtype selections.' : undefined}>
+                  <select id="batch" className="select" value={batch ? f.batchId : ''} disabled={!f.courseId || !eligible?.length || !!slotError} onChange={(e) => set('batchId', e.target.value)}>
                     <option value="">Select batch…</option>
-                    {slots?.map((b) => <option key={b.id} value={b.id}>{b.name} · {b.timing} · {b.seats_left} seats left</option>)}
+                    {eligible?.map((b) => <option key={b.id} value={b.id}>{b.name} · {b.course_subtype?.name ?? 'Course-wide'} · {b.timing} · {b.seats_left} seats left</option>)}
                   </select>
                 </Field>
-                <SubtypeChecks courseId={f.courseId} value={f.subtypeIds} onChange={(ids) => set('subtypeIds', ids)} error={serverErrors.course_subtype_ids ?? serverErrors.course_subtype_id} />
                 {batch && seats <= 3 && (
                   <div className="callout warning span-2">
                     <AlertTriangle />
@@ -278,8 +293,12 @@ export default function Admission() {
               </div>
               <div className="summary-box">
                 <div className="kv"><span>Course fee</span><strong className="num">{money(fee)}</strong></div>
+                {selectedSubtypes.map((subtype) => <div className="kv" key={subtype.id}>
+                  <span>{subtype.name} <small className="muted">(reference fee)</small></span>
+                  <strong className="num">{subtype.fee == null ? 'Fee not set' : money(subtype.fee)}</strong>
+                </div>)}
                 <div className="kv"><span>Discount</span><strong className="num">− {money(discount)}</strong></div>
-                <div className="kv"><span>Net fee</span><strong className="num">{money(net)}</strong></div>
+                <div className="kv"><span>Final payable</span><strong className="num">{money(net)}</strong></div>
                 <div className="kv">
                   <span>Paid now {initial > 0 && `(${f.mode})`}</span>
                   <strong className="num" style={{ color: 'var(--success-700)' }}>{money(initial)}</strong>

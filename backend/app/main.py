@@ -33,9 +33,12 @@ async def request_log(request: Request, call_next):
     start = time.perf_counter()
     try:
         response = await call_next(request)
-    except Exception:  # QA-05: answer here so the 500 still passes through CORS and gets the headers below
-        log.exception("unhandled error rid=%s on %s %s", rid, request.method, request.url.path)
-        response = JSONResponse(errors._body("INTERNAL_ERROR", "Something went wrong. Please try again."), status_code=500)
+    except Exception as e:  # Answer here so errors still pass through CORS and get the headers below.
+        errors.log_failure(log, f"unhandled error rid={rid} on {request.method} {request.url.path}", e)
+        if errors.database_unavailable(e):
+            response = JSONResponse(errors._body("DATABASE_UNAVAILABLE", "The service is temporarily unavailable. Please try again later."), status_code=503)
+        else:
+            response = JSONResponse(errors._body("INTERNAL_ERROR", "Something went wrong. Please try again."), status_code=500)
     response.headers["X-Request-ID"] = rid
     response.headers.update(SECURITY_HEADERS)
     if request.url.path.startswith(settings.api_v1_prefix):
@@ -64,9 +67,9 @@ def health():
 def health_db(db: Session = Depends(get_db)):
     try:
         db.execute(text("SELECT 1"))
-    except Exception:
-        log.exception("database health check failed")
-        return {"status": "error", "service": "ims-api", "database": "unreachable"}
+    except Exception as e:
+        errors.log_failure(log, "database health check failed", e)
+        return JSONResponse({"status": "error", "service": "ims-api", "database": "unreachable"}, status_code=503)
     return {"status": "ok", "service": "ims-api", "database": "ok"}
 
 

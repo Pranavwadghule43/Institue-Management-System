@@ -8,12 +8,13 @@ import {
   Avatar, Badge, Confirm, Drawer, Empty, FeeStateBadge, Field, InstBadge, LoadError, Menu, PageHeader, Panel, Progress, SkeletonRows, StatusDot, Tabs,
 } from '../../components/ui';
 import { api, useQuery, write } from '../../api/client';
-import type { FeeSummary, Payment, Ref, Student, Subtype, TimeSlot } from '../../api/types';
+import type { FeeSummary, Payment, Ref, Student, TimeSlot } from '../../api/types';
 import { date, dateTime, iso, money, n, relDays, toDate } from '../../lib/format';
 import { feeReminderText, waLink } from '../../lib/whatsapp';
 import NotFound from '../NotFound';
 import { PlanEditor, planError, type PlanRow } from '../../components/PlanEditor';
-import { SubtypeChecks, activeOnly } from '../../components/SubtypeChecks';
+import { SubtypeChecks } from '../../components/SubtypeChecks';
+import { eligibleTimeSlots } from '../../lib/schedule';
 
 type Tab = 'overview' | 'fees' | 'receipts' | 'activity';
 interface Activity { at: string; type: string; title: string; by: Ref | null; ref?: string | null; note?: string | null; action?: string }
@@ -355,7 +356,6 @@ function EditStudent({ open, s, onClose }: { open: boolean; s: Student; onClose:
   const [busy, setBusy] = useState(false);
   // sub-types are only sent when changed, so an edit never drops one that was made inactive later
   const [subs, setSubs] = useState<number[] | null>(null);
-  const { data: subtypes } = useQuery<Subtype[]>(open ? `/courses/${s.course.id}/subtypes` : null, { active: true });
   useEffect(() => {
     if (open) {
       setF(init());
@@ -369,7 +369,7 @@ function EditStudent({ open, s, onClose }: { open: boolean; s: Student; onClose:
     setBusy(true);
     try {
       const body: Record<string, unknown> = { ...f, whatsapp_number: f.whatsapp_number || f.mobile };
-      if (subs !== null) body.course_subtype_ids = activeOnly(subs, subtypes);
+      if (subs !== null) body.course_subtype_ids = subs;
       if (!f.aadhaar) delete body.aadhaar; // blank keeps the stored Aadhaar
       await write(api(`/students/${s.code}`, { method: 'PATCH', body }));
       toast('success', 'Student updated');
@@ -455,7 +455,10 @@ function ChangeSlot({ open, s, onClose }: { open: boolean; s: Student; onClose: 
   const [slot, setSlot] = useState('');
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
-  const { data: slots } = useQuery<TimeSlot[]>(open ? '/time-slots' : null, { course_id: s.course.id, active: true, include_completed: false });
+  const { data: slots, error, loading, reload } = useQuery<TimeSlot[]>(open ? '/time-slots' : null, { course_id: s.course.id, active: true, include_completed: false });
+  const subtypeIds = s.course_subtypes.length ? s.course_subtypes.map((subtype) => subtype.id) : s.course_subtype ? [s.course_subtype.id] : [];
+  const eligible = eligibleTimeSlots(slots, s.course.id, subtypeIds)?.filter((option) => option.id !== s.time_slot.id);
+  const selected = eligible?.some((option) => String(option.id) === slot) ?? false;
   useEffect(() => {
     setSlot('');
     setReason('');
@@ -474,16 +477,17 @@ function ChangeSlot({ open, s, onClose }: { open: boolean; s: Student; onClose: 
   };
   return (
     <Drawer open={open} onClose={onClose} title="Change batch" sub={`Currently ${s.time_slot.name} · ${s.time_slot.timing}`}
-      foot={<><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={busy || !slot} onClick={save}>{busy && <span className="spinner" />}Move student</button></>}>
+      foot={<><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={busy || !selected || !!error} onClick={save}>{busy && <span className="spinner" />}Move student</button></>}>
       <div className="stack">
-        <Field label="New time slot" required htmlFor="cs-slot">
-          <select id="cs-slot" className="select" value={slot} onChange={(e) => setSlot(e.target.value)}>
+        <Field label="New time slot" required htmlFor="cs-slot" hint={error ?
+          <button type="button" className="btn btn-ghost btn-sm" onClick={reload}>Could not load time slots. Retry</button>
+          : loading ? 'Loading time slots…' : eligible?.length === 0 ? 'There are no other compatible time slots.' : undefined}>
+          <select id="cs-slot" className="select" value={selected ? slot : ''} disabled={!eligible?.length || !!error} onChange={(e) => setSlot(e.target.value)}>
             <option value="">Select…</option>
-            {slots?.filter((x) => x.id !== s.time_slot.id).map((x) => <option key={x.id} value={x.id}>{x.name} · {x.timing} · {x.seats_left} seats left</option>)}
+            {eligible?.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.course_subtype?.name ?? 'Course-wide'} · {x.timing} · {x.seats_left} seats left</option>)}
           </select>
         </Field>
         <Field label="Reason" htmlFor="cs-r"><textarea id="cs-r" className="textarea" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
-        <p className="muted" style={{ fontSize: 12 }}>Only batches of the same course are listed. The move is kept in the batch history.</p>
       </div>
     </Drawer>
   );

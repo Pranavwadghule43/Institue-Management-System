@@ -1,3 +1,10 @@
+import type { TimeSlot } from '../api/types';
+
+export function eligibleTimeSlots(slots: TimeSlot[] | undefined, courseId: number, subtypeIds: readonly number[]) {
+  return slots?.filter((slot) => slot.course_id === courseId &&
+    (slot.course_subtype_id == null || subtypeIds.includes(slot.course_subtype_id)));
+}
+
 export function validInstituteSlot(start: string, end: string): boolean {
   const time = /^([01]\d|2[0-3]):[0-5]\d$/;
   return time.test(start) && time.test(end) && start >= '08:00' && end <= '21:00' && end > start;

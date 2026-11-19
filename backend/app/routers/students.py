@@ -102,38 +102,41 @@ class AdmissionIn(In):
         return self
 
 
-def check_course_choice(db: Session, course_id: int | None, subtype_id: int | None):
-    if subtype_id and not course_id:
-        raise bad("SUBTYPE_WITHOUT_COURSE", "Choose a course before a sub-type.", "course_subtype_id")
-    if course_id:
-        c = get_course(db, course_id)
-        if not c.is_active:
-            raise bad("COURSE_INACTIVE", "Choose an active course.", "course_id")
-    if subtype_id:
-        st = db.get(CourseSubtype, subtype_id)
-        if st is None or st.course_id != course_id or not st.is_active:
-            raise bad("SUBTYPE_MISMATCH", "Choose a sub-type of the selected course.", "course_subtype_id")
-
-
 def wanted_subtypes(ids: list[int] | None, single: int | None) -> list[int]:
     """The list wins; otherwise the single sub-type older screens send. Duplicates dropped, order kept."""
     return list(dict.fromkeys(ids if ids is not None else ([single] if single else [])))
 
 
-def check_subtypes(db: Session, course_id: int | None, ids: list[int]) -> list[CourseSubtype]:
-    for i in ids:
-        check_course_choice(db, course_id, i)
-    return [db.get(CourseSubtype, i) for i in ids]
+def check_subtypes(db: Session, course_id: int | None, ids: list[int], *, existing_ids: frozenset[int] = frozenset()) -> list[CourseSubtype]:
+    if not ids:
+        return []
+    if not course_id:
+        raise bad("SUBTYPE_WITHOUT_COURSE", "Choose a course before a sub-type.", "course_subtype_id")
+    if not get_course(db, course_id).is_active:
+        raise bad("COURSE_INACTIVE", "Choose an active course.", "course_id")
+    offered = {s.id: s for s in db.scalars(
+        select(CourseSubtype).where(CourseSubtype.course_id == course_id, CourseSubtype.id.in_(ids)).with_for_update(read=True)
+    )}
+    if any(i not in offered or (not offered[i].is_active and i not in existing_ids) for i in ids):
+        raise bad("SUBTYPE_MISMATCH", "Choose an active sub-type of the selected course.", "course_subtype_id")
+    return [offered[i] for i in ids]
 
 
 def subtypes_out(items: list[CourseSubtype]) -> list[dict]:
     return [{"id": st.id, "name": st.name} for st in items]
 
 
-def valid_slot(db: Session, slot_id: int, course_id: int) -> TimeSlot:
-    slot = db.get(TimeSlot, slot_id)
+def _check_slot_subtype(slot: TimeSlot, subtype_ids: list[int], field: str) -> None:
+    if slot.course_subtype_id is not None and slot.course_subtype_id not in subtype_ids:
+        raise bad("TIME_SLOT_SUBTYPE_MISMATCH", "Choose a batch and sub-types that match each other.", field)
+
+
+def valid_slot(db: Session, slot_id: int, course_id: int, subtype_ids: list[int]) -> TimeSlot:
+    # Shared locks allow concurrent enrolments and serialize assignment changes to the slot.
+    slot = db.get(TimeSlot, slot_id, with_for_update={"read": True}, populate_existing=True)
     if slot is None or slot.course_id != course_id or not slot.is_active or slot_status(slot, today()) == "Completed":
         raise bad("INVALID_TIME_SLOT", "Choose a valid time slot for the course.", "time_slot_id")
+    _check_slot_subtype(slot, subtype_ids, "time_slot_id")
     return slot
 
 
@@ -163,7 +166,7 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
         raise bad("COURSE_MISMATCH", "The admission course must match the enquiry course.", "course_id")
     chosen = check_subtypes(db, body.course_id, wanted_subtypes(body.course_subtype_ids, body.course_subtype_id))
     course = get_course(db, body.course_id)
-    slot = valid_slot(db, body.time_slot_id, course.id)
+    slot = valid_slot(db, body.time_slot_id, course.id, [st.id for st in chosen])
     fee = course.fee
     if body.discount > fee:
         raise bad("DISCOUNT_EXCEEDS_FEE", "Discount can't exceed the course fee.", "discount")
@@ -380,7 +383,10 @@ def update_student(code: str, body: StudentPatch, db: Session = Depends(get_db),
     if "course_subtype_ids" in data or "course_subtype_id" in data:
         single = data.pop("course_subtype_id", None)
         ids = data.pop("course_subtype_ids", None)
-        subtype_change = check_subtypes(db, s.course_id, wanted_subtypes(ids if ids is not None or single else [], single))
+        subtype_ids = wanted_subtypes(ids, single)
+        subtype_change = check_subtypes(db, s.course_id, subtype_ids, existing_ids=frozenset(st.id for st in s.subtypes))
+        slot = db.get(TimeSlot, s.time_slot_id, with_for_update={"read": True}, populate_existing=True)
+        _check_slot_subtype(slot, subtype_ids, "course_subtype_ids")
     aadhaar_changed = "aadhaar" in data
     if aadhaar_changed:
         data.update(aadhaar_columns(data.pop("aadhaar")))
@@ -447,7 +453,8 @@ def change_time_slot(code: str, body: SlotChangeIn, db: Session = Depends(get_db
     s = get_student(db, code, lock=True)
     if body.time_slot_id == s.time_slot_id:
         raise bad("SAME_TIME_SLOT", "The student is already in this time slot.", "time_slot_id")
-    slot = valid_slot(db, body.time_slot_id, s.course_id)  # same course only; a course transfer is a separate decision
+    subtype_ids = wanted_subtypes([st.id for st in s.subtypes] or None, s.course_subtype_id)
+    slot = valid_slot(db, body.time_slot_id, s.course_id, subtype_ids)
     old = s.time_slot
     db.add(StudentTimeSlotHistory(student_id=s.id, old_time_slot_id=old.id, new_time_slot_id=slot.id, changed_by=user.id, reason=body.reason))
     s.time_slot_id = slot.id

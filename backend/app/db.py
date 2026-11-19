@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from .config import settings
 
 # Supabase session pooler caps connections per role, so keep the pool small.
-engine = create_engine(settings.database_url, pool_size=5, max_overflow=5)
+engine = create_engine(settings.database_url, pool_size=5, max_overflow=5, hide_parameters=True)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 # Liveness check only for connections that sat idle (performance): pool_pre_ping pinged on EVERY request, costing one

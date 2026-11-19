@@ -16,11 +16,13 @@ export interface Me { id: number; username: string; full_name: string; role: Rol
 
 export interface Course {
   id: number; code: string; name: string; duration_months: number | null; fee: Money; description: string | null; is_active: boolean;
-  active_students?: number; time_slots?: number; subtypes?: { id: number; name: string }[];
+  active_students?: number; time_slots?: number; subtypes?: SubtypeRef[];
 }
-export interface Subtype { id: number; course_id: number; name: string; is_active: boolean }
+export interface SubtypeRef extends Ref { fee: Money | null }
+export interface Subtype extends SubtypeRef { course_id: number; is_active: boolean }
 export interface TimeSlot {
   id: number; course_id: number; name: string; start_time: string; end_time: string; timing: string; days: string; faculty: string | null;
+  course_subtype_id: number | null; course_subtype: Ref | null;
   capacity: number; start_date: string | null; end_date: string | null; is_active: boolean; status: 'Running' | 'Upcoming' | 'Completed';
   assigned_students?: number; seats_left?: number; course?: { id: number; code: string; name: string };
 }

@@ -1,7 +1,7 @@
 # IMS API (FastAPI)
 
 Business backend for the Updaate Computers IMS React UI. The React app in `frontend/` calls these endpoints; the old in-memory demo store (`store.ts`) has been removed.
-Dev DB: Supabase PostgreSQL (36 approved tables). Production target: MySQL.
+Development and client testing use the shared Supabase PostgreSQL project `tiusjvbrbjsxfmvhursm` (38 application tables).
 
 ## Run
 
@@ -10,11 +10,19 @@ cd backend
 uv venv -p 3.11 .venv && uv pip install -p .venv/Scripts/python.exe -e ".[dev]"
 # without uv:  py -3.11 -m venv .venv  &&  .venv/Scripts/python -m pip install -e ".[dev]"
 cp .env.example .env            # fill DATABASE_URL, AADHAAR_* keys
-.venv/Scripts/python -m uvicorn app.main:app --reload     # http://localhost:8000/docs
+.venv/Scripts/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 .venv/Scripts/python -m pytest -p no:logging               # local throwaway Postgres, never the shared DB
 ```
 
-First-time setup of a database (writes to the database in `DATABASE_URL`; run once, by someone allowed to):
+For the current local integration, use the project owner's authorized Supabase session-pooler connection in
+`backend/.env`. For the `postgres` database account, the pooler username is `postgres.tiusjvbrbjsxfmvhursm`.
+Copy the host and port from the project's **Connect → Session pooler** dialog and use `sslmode=require`.
+Percent-encode reserved characters in the database password before putting it in the URL.
+Run Uvicorn from `backend/` so the settings loader finds that file. An exported `DATABASE_URL` takes precedence.
+Check `http://127.0.0.1:8000/api/v1/health/db` before signing in. If it returns 503, check the backend log for the
+connection failure category. A database password rejection means the pooler could not establish the API's connection.
+
+First-time setup for a new database only, with authorization to write to that database:
 
 ```bash
 .venv/Scripts/python -m app.cli seed                               # permissions, expense categories, institute details from the templates
@@ -28,6 +36,8 @@ a fifth staff account returns `409 STAFF_ACCOUNT_LIMIT_REACHED`, and disabled st
 
 - `APP_ENV=production` (docs off, HSTS on). Startup refuses to run without `AADHAAR_ENC_KEY` / `AADHAAR_HASH_KEY`.
 - `FRONTEND_ORIGIN` = the real web origin(s), comma-separated. Bearer tokens only, no cookies.
+- Use a dedicated application database role for the hosted client-facing environment. Grant the DML, sequence and
+  function privileges the API needs and matching RLS policies. Reserve schema changes for a separate migration role.
 - Run behind HTTPS: `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --proxy-headers --forwarded-allow-ips <proxy ip>`.
 - Sessions: 12 h absolute, 30 min idle (`SESSION_HOURS`, `SESSION_IDLE_MINUTES`); 5 wrong passwords lock an account for 15 min;
   20 failures from one IP in 15 min block that IP. Users change their own password from the account menu.
@@ -44,7 +54,7 @@ app/
   config.py      env settings
   db.py          engine + session (services commit explicitly, one transaction per request)
   errors.py      {"error": {code, message, field_errors}} + DB constraint -> business error mapping
-  models.py      ORM mirror of the 36 approved tables (no create_all against shared DBs)
+  models.py      ORM mirror of the 38 application tables
   security.py    SECURITY SEAM: sessions, login, RBAC (get_current_user / require / require_admin)
   common.py      validators, money (Decimal, 2dp strings), dates (institute TZ), pagination, audit, numbering, Aadhaar crypto
   ledger.py      the single money source: FIFO allocation, fee state, totals, daily/monthly series

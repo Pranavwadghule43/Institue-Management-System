@@ -15,7 +15,7 @@ function loadSource(source) {
 }
 
 // Business rules live in the FastAPI backend (backend/tests). These cover the UI-side preview helpers only.
-const { validInstituteSlot, formatInstituteSlot, addMonthsClamped } = loadSource('src/lib/schedule.ts');
+const { validInstituteSlot, formatInstituteSlot, addMonthsClamped, eligibleTimeSlots } = loadSource('src/lib/schedule.ts');
 
 test('course time slots respect 8 AM to 9 PM and allow variable duration', () => {
   assert.equal(validInstituteSlot('08:00', '09:00'), true);
@@ -25,4 +25,18 @@ test('course time slots respect 8 AM to 9 PM and allow variable duration', () =>
   assert.equal(validInstituteSlot('10:00', '10:00'), false);
   assert.equal(formatInstituteSlot('08:00', '09:30'), '8:00 AM – 9:30 AM');
   assert.equal(addMonthsClamped(new Date(2026, 0, 31), 1).getDate(), 28);
+});
+
+test('batch choices keep course-wide slots and match any selected subtype of the course', () => {
+  const slots = [
+    { id: 1, course_id: 10, course_subtype_id: null },
+    { id: 2, course_id: 10, course_subtype_id: 4 },
+    { id: 3, course_id: 10, course_subtype_id: 5 },
+    { id: 4, course_id: 20, course_subtype_id: null },
+  ];
+  assert.deepEqual(eligibleTimeSlots(slots, 10, []).map((slot) => slot.id), [1]);
+  assert.deepEqual(eligibleTimeSlots(slots, 10, [5]).map((slot) => slot.id), [1, 3]);
+  assert.deepEqual(eligibleTimeSlots(slots, 10, [4, 5]).map((slot) => slot.id), [1, 2, 3]);
+  assert.deepEqual(eligibleTimeSlots(slots, 20, [4, 5]).map((slot) => slot.id), [4]);
+  assert.equal(eligibleTimeSlots(undefined, 10, [4]), undefined);
 });

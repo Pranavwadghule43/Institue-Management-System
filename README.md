@@ -8,13 +8,13 @@ All data comes from the server (no demo or sample data in the app). Money, total
 ```bash
 # 1. API - run from backend/ (see backend/README.md for setup, seeding and the single Admin account)
 cd backend
-.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000   # Linux/macOS: .venv/bin/python
+.venv/Scripts/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000   # Linux/macOS: .venv/bin/python
 
 # 2. Web app - run from frontend/ (package.json lives there; Vite reads .env from frontend/)
 cd frontend
-cp ../.env.example .env   # VITE_API_URL=http://localhost:8000/api/v1
+cp ../.env.example .env   # VITE_API_URL=http://127.0.0.1:8000/api/v1
 npm install
-npm run dev            # http://localhost:5173
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
 npm run build          # type-check + production build -> frontend/dist/
 npm test
 ```

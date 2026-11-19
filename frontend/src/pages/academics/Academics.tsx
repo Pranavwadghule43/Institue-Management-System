@@ -15,9 +15,10 @@ export function Courses() {
   const [edit, setEdit] = useState<Course | 'new' | null>(null);
   const [del, setDel] = useState<Course | null>(null);
   const [subCourse, setSubCourse] = useState<Course | null>(null);
-  const [slotOpen, setSlotOpen] = useState(false);
+  const [slotEdit, setSlotEdit] = useState<TimeSlot | 'new' | null>(null);
   const { data: courses, error, loading, reload } = useQuery<Course[]>('/courses');
-  const { data: slots } = useQuery<TimeSlot[]>('/time-slots', { include_completed: false });
+  const { data: slots, error: slotError, loading: slotsLoading, reload: reloadSlots } =
+    useQuery<TimeSlot[]>('/time-slots', { include_completed: false });
   const manageSlots = can('batches.manage') || can('courses.manage');
 
   const toggle = async (c: Course, v: boolean) => {
@@ -92,14 +93,33 @@ export function Courses() {
       </section>
 
       <section className="panel" style={{ marginTop: 18 }}>
-        <div className="panel__head"><div><h2>Scheduled time slots</h2><p>Students assigned by time slot; these are enrolment counts, not attendance.</p></div>{manageSlots && <button className="btn btn-primary" onClick={() => setSlotOpen(true)} disabled={!courses?.some((c) => c.is_active)}><Plus /> Add time slot</button>}</div>
-        {slots && !slots.length ? <Empty icon={<BookOpen />} title="No time slots yet" body="Add a time slot (batch) for a course before admitting students." /> : (
-          <div className="table-wrap"><table className="table"><thead><tr><th>Time slot</th><th>Timing</th><th>Course</th><th>Days</th><th>Faculty</th><th className="ta-r">Students assigned</th><th className="ta-r">Capacity</th><th>Active</th></tr></thead><tbody>{slots?.map((b) => <tr key={b.id} style={!b.is_active ? { opacity: 0.6 } : undefined}><td style={{ fontWeight: 600 }}>{b.name}</td><td>{b.timing}</td><td>{b.course?.name}</td><td>{b.days}</td><td>{b.faculty ?? '—'}</td><td className="ta-r"><Link to={`/students?course=${b.course_id}&batch=${b.id}`}>{b.assigned_students}</Link></td><td className="ta-r num">{b.capacity}</td><td>{manageSlots ? <Switch on={b.is_active} label={`${b.name} active`} onChange={async (v) => { try { await write(api(`/time-slots/${b.id}/${v ? 'activate' : 'deactivate'}`, { method: 'POST' })); } catch (e) { toast('error', errText(e)); } }} /> : b.is_active ? 'Yes' : 'No'}</td></tr>)}</tbody></table></div>
+        <div className="panel__head"><div><h2>Scheduled time slots</h2><p>Students assigned by time slot; these are enrolment counts, not attendance.</p></div>{manageSlots && <button className="btn btn-primary" onClick={() => setSlotEdit('new')} disabled={!courses?.some((c) => c.is_active)}><Plus /> Add time slot</button>}</div>
+        {slotError ? <LoadError error={slotError} retry={reloadSlots} /> : slotsLoading ? <SkeletonRows rows={3} cols={10} /> :
+          slots?.length === 0 ? <Empty icon={<BookOpen />} title="No time slots yet" body="Add a time slot (batch) for a course before admitting students." /> : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead><tr><th>Time slot</th><th>Timing</th><th>Course</th><th>Course subtype</th><th>Days</th><th>Faculty</th>
+                <th className="ta-r">Students assigned</th><th className="ta-r">Capacity</th><th>Active</th>{manageSlots && <th>Actions</th>}</tr></thead>
+              <tbody>{slots?.map((b) => (
+                <tr key={b.id} style={!b.is_active ? { opacity: 0.6 } : undefined}>
+                  <td style={{ fontWeight: 600 }}>{b.name}</td><td>{b.timing}</td><td>{b.course?.name}</td>
+                  <td>{b.course_subtype?.name ?? 'Course-wide'}</td><td>{b.days}</td><td>{b.faculty ?? '—'}</td>
+                  <td className="ta-r"><Link to={`/students?course=${b.course_id}&batch=${b.id}`}>{b.assigned_students}</Link></td>
+                  <td className="ta-r num">{b.capacity}</td>
+                  <td>{manageSlots ? <Switch on={b.is_active} label={`${b.name} active`} onChange={async (v) => {
+                    try { await write(api(`/time-slots/${b.id}/${v ? 'activate' : 'deactivate'}`, { method: 'POST' })); }
+                    catch (e) { toast('error', errText(e)); }
+                  }} /> : b.is_active ? 'Yes' : 'No'}</td>
+                  {manageSlots && <td><button className="btn btn-ghost btn-sm" onClick={() => setSlotEdit(b)} aria-label={`Edit time slot ${b.name}`}><Pencil /> Edit</button></td>}
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
         )}
       </section>
 
-      <SlotDrawer open={slotOpen} onClose={() => setSlotOpen(false)} courses={(courses ?? []).filter((c) => c.is_active)} />
-      <SubtypeDrawer course={subCourse} onClose={() => setSubCourse(null)} />
+      <SlotDrawer selected={slotEdit} onClose={() => setSlotEdit(null)} courses={courses ?? []} />
+      <SubtypeDrawer course={subCourse} canManage={can('courses.manage')} onClose={() => setSubCourse(null)} />
       <CourseDrawer course={edit} onClose={() => setEdit(null)} />
 
       <Confirm
@@ -180,60 +200,164 @@ function CourseDrawer({ course, onClose }: { course: Course | 'new' | null; onCl
   );
 }
 
-function SubtypeDrawer({ course, onClose }: { course: Course | null; onClose: () => void }) {
+function SubtypeDrawer({ course, canManage, onClose }: { course: Course | null; canManage: boolean; onClose: () => void }) {
   const { toast } = useApp();
+  const [editing, setEditing] = useState<Subtype | 'new' | null>(null);
   const [name, setName] = useState('');
-  const { data: subtypes } = useQuery<Subtype[]>(course ? `/courses/${course.id}/subtypes` : null);
-  const add = async () => {
-    if (!name.trim()) return;
+  const [fee, setFee] = useState('');
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const { data: subtypes, error, loading, reload } = useQuery<Subtype[]>(course ? `/courses/${course.id}/subtypes` : null);
+  useEffect(() => { setEditing(null); }, [course?.id]);
+
+  const openForm = (value: Subtype | 'new') => {
+    setEditing(value);
+    setName(value === 'new' ? '' : value.name);
+    setFee(value === 'new' ? '' : value.fee ?? '');
+    setErrors({});
+  };
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!course || !editing || busy) return;
+    const cleanedFee = fee.trim();
+    const invalid: Record<string, string> = {};
+    if (!name.trim()) invalid.name = 'Enter a subtype name.';
+    if (cleanedFee && !/^\d{1,10}(?:\.\d{1,2})?$/.test(cleanedFee)) {
+      invalid.fee = 'Enter a non-negative amount with up to 10 digits and 2 decimal places.';
+    }
+    setErrors(invalid);
+    if (Object.keys(invalid).length) return;
+    setBusy(true);
     try {
-      await write(api(`/courses/${course!.id}/subtypes`, { method: 'POST', body: { name } }));
-      toast('success', 'Sub-type added', name.trim());
-      setName('');
+      const path = editing === 'new' ? `/courses/${course.id}/subtypes` : `/course-subtypes/${editing.id}`;
+      await write(api(path, { method: editing === 'new' ? 'POST' : 'PATCH', body: { name: name.trim(), fee: cleanedFee || null } }));
+      toast('success', editing === 'new' ? 'Course subtype added' : 'Course subtype updated');
+      setEditing(null);
     } catch (e) {
+      setErrors((e as { fields?: Record<string, string> }).fields ?? {});
       toast('error', errText(e));
+    } finally {
+      setBusy(false);
     }
   };
+
   return (
-    <Drawer open={!!course} onClose={onClose} title="Course sub-types" sub={course?.name ?? ''} foot={<button className="btn btn-secondary" onClick={onClose}>Done</button>}>
-      <div className="stack">
-        {subtypes?.map((s) => (
-          <div className="row-between" key={s.id}>
-            <span>{s.name} {!s.is_active && <span className="muted">(inactive)</span>}</span>
-            <button className="btn btn-ghost btn-sm" onClick={() => write(api(`/course-subtypes/${s.id}/${s.is_active ? 'deactivate' : 'activate'}`, { method: 'POST' })).catch((e) => toast('error', errText(e)))}>
-              {s.is_active ? 'Deactivate' : 'Activate'}
-            </button>
-          </div>
-        ))}
-        <Field label="New sub-type" htmlFor="sub-name"><input id="sub-name" className="input" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} /></Field>
-        <button className="btn btn-primary" onClick={add} disabled={!name.trim()}><Plus /> Add sub-type</button>
-      </div>
+    <Drawer open={!!course} onClose={onClose}
+      title={editing === 'new' ? 'Add course subtype' : editing ? 'Edit course subtype' : 'Course subtypes'}
+      sub={course?.name ?? ''}
+      foot={editing ? <>
+        <button className="btn btn-secondary" disabled={busy} onClick={() => setEditing(null)}>Cancel</button>
+        <button type="submit" form="course-subtype-form" className="btn btn-primary" disabled={busy}>Save subtype</button>
+      </> : <button className="btn btn-secondary" onClick={onClose}>Done</button>}>
+      {editing ? (
+        <form id="course-subtype-form" className="stack" onSubmit={save}>
+          <Field label="Parent course" htmlFor="sub-course"><input id="sub-course" className="input" value={course?.name ?? ''} readOnly /></Field>
+          <Field label="Subtype name" required htmlFor="sub-name" error={errors.name}>
+            <input id="sub-name" className="input" maxLength={150} value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="Course subtype fee (₹)" htmlFor="sub-fee" error={errors.fee} hint="Leave blank when no subtype fee is configured.">
+            <input id="sub-fee" className="input num" inputMode="decimal" value={fee} onChange={(e) => setFee(e.target.value)} />
+          </Field>
+        </form>
+      ) : (
+        <div className="stack">
+          {error ? <LoadError error={error} retry={reload} /> : loading ? <p className="muted">Loading course subtypes…</p> :
+            subtypes?.length === 0 ? <p className="muted">This course has no subtypes.</p> : subtypes?.map((s) => (
+              <div className="row-between" key={s.id}>
+                <div><strong>{s.name}</strong> {!s.is_active && <span className="muted">(inactive)</span>}
+                  <div className="muted">{s.fee == null ? 'Fee not set' : money(s.fee)}</div>
+                </div>
+                {canManage && <div className="row">
+                  <button className="btn btn-ghost btn-sm" onClick={() => openForm(s)} aria-label={`Edit subtype ${s.name}`}><Pencil /> Edit</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => write(api(`/course-subtypes/${s.id}/${s.is_active ? 'deactivate' : 'activate'}`, { method: 'POST' })).catch((e) => toast('error', errText(e)))}>
+                    {s.is_active ? 'Deactivate' : 'Activate'}
+                  </button>
+                </div>}
+              </div>
+            ))}
+          {canManage && <button className="btn btn-primary" onClick={() => openForm('new')}><Plus /> Add course subtype</button>}
+        </div>
+      )}
     </Drawer>
   );
 }
 
-function SlotDrawer({ open, onClose, courses }: { open: boolean; onClose: () => void; courses: Course[] }) {
+const blankSlot = { name: '', course_id: '', course_subtype_id: '', start_time: '08:00', end_time: '09:00', days: 'Mon – Sat', faculty: '', capacity: 30 };
+
+function SlotDrawer({ selected, onClose, courses }: { selected: TimeSlot | 'new' | null; onClose: () => void; courses: Course[] }) {
   const { toast } = useApp();
-  const blank = { name: '', course_id: '', start_time: '08:00', end_time: '09:00', days: 'Mon – Sat', faculty: '', capacity: 30 };
-  const [slot, setSlot] = useState(blank);
+  const editing = selected && selected !== 'new' ? selected : null;
+  const [slot, setSlot] = useState(blankSlot);
   const [busy, setBusy] = useState(false);
-  useEffect(() => setSlot(blank), [open]); // eslint-disable-line react-hooks/exhaustive-deps
-  const valid = !!(slot.course_id && slot.name.trim() && validInstituteSlot(slot.start_time, slot.end_time) && slot.capacity > 0);
-  const save = async () => {
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const { data: subtypes, error, loading, reload } = useQuery<Subtype[]>(selected && slot.course_id ? `/courses/${slot.course_id}/subtypes` : null);
+  const choices = subtypes?.filter((s) => s.is_active || s.id === editing?.course_subtype_id) ?? [];
+  useEffect(() => {
+    setErrors({});
+    setSlot(editing ? { name: editing.name, course_id: String(editing.course_id), course_subtype_id: String(editing.course_subtype_id ?? ''),
+      start_time: editing.start_time, end_time: editing.end_time, days: editing.days, faculty: editing.faculty ?? '', capacity: editing.capacity } : blankSlot);
+  }, [editing, selected]);
+
+  const set = <K extends keyof typeof blankSlot>(key: K, value: (typeof blankSlot)[K]) => setSlot((current) => ({ ...current, [key]: value }));
+  const valid = !!(slot.course_id && slot.name.trim() && validInstituteSlot(slot.start_time, slot.end_time) &&
+    Number.isInteger(slot.capacity) && slot.capacity >= 1 && slot.capacity <= 1000);
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!valid || busy) return;
     setBusy(true);
+    setErrors({});
+    const { course_id, course_subtype_id, ...details } = slot;
+    const assignment = { ...details, course_subtype_id: course_subtype_id ? Number(course_subtype_id) : null };
     try {
-      await write(api('/time-slots', { method: 'POST', body: { ...slot, course_id: Number(slot.course_id) } }));
-      toast('success', 'Time slot added', slot.name);
+      if (editing) await write(api(`/time-slots/${editing.id}`, { method: 'PATCH', body: assignment }));
+      else await write(api('/time-slots', { method: 'POST', body: { ...assignment, course_id: Number(course_id) } }));
+      toast('success', editing ? 'Time slot updated' : 'Time slot added', slot.name);
       onClose();
     } catch (e) {
+      setErrors((e as { fields?: Record<string, string> }).fields ?? {});
       toast('error', errText(e));
     } finally {
       setBusy(false);
     }
   };
   return (
-    <Drawer open={open} onClose={onClose} title="Add time slot" sub="Institute hours: 8:00 AM to 9:00 PM" foot={<><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={!valid || busy} onClick={save}>{busy && <span className="spinner" />}Save time slot</button></>}>
-      <div className="form-grid"><Field label="Slot name" required htmlFor="slot-name"><input id="slot-name" className="input" value={slot.name} onChange={(e) => setSlot({ ...slot, name: e.target.value })} /></Field><Field label="Course" required htmlFor="slot-course"><select id="slot-course" className="select" value={slot.course_id} onChange={(e) => setSlot({ ...slot, course_id: e.target.value })}><option value="">Select course</option>{courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field><Field label="Start" required htmlFor="slot-start"><input id="slot-start" className="input" type="time" min="08:00" max="21:00" value={slot.start_time} onChange={(e) => setSlot({ ...slot, start_time: e.target.value })} /></Field><Field label="End" required htmlFor="slot-end" error={slot.start_time && slot.end_time && !validInstituteSlot(slot.start_time, slot.end_time) ? 'Between 8:00 AM and 9:00 PM, after the start' : undefined}><input id="slot-end" className="input" type="time" min="08:00" max="21:00" value={slot.end_time} onChange={(e) => setSlot({ ...slot, end_time: e.target.value })} /></Field><Field label="Days" htmlFor="slot-days"><input id="slot-days" className="input" value={slot.days} onChange={(e) => setSlot({ ...slot, days: e.target.value })} /></Field><Field label="Faculty" htmlFor="slot-teacher"><input id="slot-teacher" className="input" value={slot.faculty} onChange={(e) => setSlot({ ...slot, faculty: e.target.value })} /></Field><Field label="Capacity" required htmlFor="slot-capacity"><input id="slot-capacity" className="input" type="number" min="1" value={slot.capacity} onChange={(e) => setSlot({ ...slot, capacity: Number(e.target.value) })} /></Field></div>
+    <Drawer open={!!selected} onClose={onClose} title={editing ? 'Edit time slot' : 'Add time slot'} sub="Institute hours: 8:00 AM to 9:00 PM"
+      foot={<><button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button type="submit" form="time-slot-form" className="btn btn-primary" disabled={!valid || busy}>Save time slot</button></>}>
+      <form id="time-slot-form" className="form-grid" onSubmit={save}>
+        <Field label="Slot name" required htmlFor="slot-name" error={errors.name}><input id="slot-name" className="input" maxLength={120} value={slot.name} onChange={(e) => set('name', e.target.value)} /></Field>
+        <Field label="Course" required htmlFor="slot-course" error={errors.course_id}>
+          <select id="slot-course" className="select" value={slot.course_id} disabled={!!editing} onChange={(e) => {
+            setSlot((current) => ({ ...current, course_id: e.target.value, course_subtype_id: '' }));
+            setErrors({});
+          }}>
+            <option value="">Select course</option>
+            {courses.filter((c) => c.is_active || c.id === editing?.course_id).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {editing && !courses.some((c) => c.id === editing.course_id) && <option value={editing.course_id}>{editing.course?.name ?? 'Assigned course'}</option>}
+          </select>
+        </Field>
+        <Field label="Course subtype" htmlFor="slot-subtype" className="span-2" error={errors.course_subtype_id}
+          hint={error ? <button type="button" className="btn btn-ghost btn-sm" onClick={reload}>Could not load subtypes. Retry</button>
+            : !slot.course_id ? 'Select a course first.' : loading ? 'Loading course subtypes…' : choices.length === 0 ? 'This course has no available subtypes.' : undefined}>
+          <select id="slot-subtype" className="select" value={slot.course_subtype_id} disabled={!slot.course_id || loading || !!error}
+            onChange={(e) => set('course_subtype_id', e.target.value)}>
+            <option value="">Course-wide</option>
+            {editing?.course_subtype && !choices.some((s) => s.id === editing.course_subtype_id) && (
+              <option value={editing.course_subtype.id}>{editing.course_subtype.name}</option>
+            )}
+            {choices.map((s) => <option key={s.id} value={s.id}>{s.name}{s.is_active ? '' : ' (inactive)'}</option>)}
+          </select>
+        </Field>
+        <Field label="Start" required htmlFor="slot-start"><input id="slot-start" className="input" type="time" min="08:00" max="21:00" value={slot.start_time} onChange={(e) => set('start_time', e.target.value)} /></Field>
+        <Field label="End" required htmlFor="slot-end" error={slot.start_time && slot.end_time && !validInstituteSlot(slot.start_time, slot.end_time) ? 'Between 8:00 AM and 9:00 PM, after the start' : undefined}>
+          <input id="slot-end" className="input" type="time" min="08:00" max="21:00" value={slot.end_time} onChange={(e) => set('end_time', e.target.value)} />
+        </Field>
+        <Field label="Days" htmlFor="slot-days" error={errors.days}><input id="slot-days" className="input" value={slot.days} onChange={(e) => set('days', e.target.value)} /></Field>
+        <Field label="Faculty" htmlFor="slot-teacher" error={errors.faculty}><input id="slot-teacher" className="input" value={slot.faculty} onChange={(e) => set('faculty', e.target.value)} /></Field>
+        <Field label="Capacity" required htmlFor="slot-capacity" error={errors.capacity}>
+          <input id="slot-capacity" className="input" type="number" min="1" max="1000" value={slot.capacity} onChange={(e) => set('capacity', Number(e.target.value))} />
+        </Field>
+      </form>
     </Drawer>
   );
 }

@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     app_name: str = "IMS API"
     api_v1_prefix: str = "/api/v1"
     database_url: str
-    frontend_origin: str = "http://localhost:5173"
+    frontend_origin: str = "http://127.0.0.1:5173"
     institute_timezone: str = "Asia/Kolkata"
     file_storage_root: str = "./storage"
     max_upload_mb: int = 5

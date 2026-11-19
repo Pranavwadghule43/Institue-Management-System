@@ -5,13 +5,14 @@ import type { Subtype } from '../api/types';
 export function SubtypeChecks({ courseId, value, onChange, error, label = 'Course sub-types' }: {
   courseId: string | number | null | undefined; value: number[]; onChange: (ids: number[]) => void; error?: string; label?: string;
 }) {
-  const { data: subtypes } = useQuery<Subtype[]>(courseId ? `/courses/${courseId}/subtypes` : null, { active: true });
+  const { data: subtypes, error: loadError, reload } = useQuery<Subtype[]>(courseId ? `/courses/${courseId}/subtypes` : null, { active: true });
   if (!courseId) return null;
   const toggle = (id: number, on: boolean) => onChange(on ? [...value.filter((x) => x !== id), id] : value.filter((x) => x !== id));
   return (
     <fieldset className={`field span-2 subtype-checks ${error ? 'has-error' : ''}`} style={{ gridColumn: '1 / -1' }}>
       <legend className="field__label">{label} <span className="muted" style={{ fontWeight: 400 }}>— tick all that apply</span></legend>
-      {subtypes === undefined ? <span className="muted" style={{ fontSize: 13 }}>Loading…</span>
+      {loadError ? <button type="button" className="btn btn-ghost btn-sm" onClick={reload}>Could not load sub-types. Retry</button>
+        : subtypes === undefined ? <span className="muted" style={{ fontSize: 13 }}>Loading…</span>
         : subtypes.length === 0 ? <span className="muted" style={{ fontSize: 13 }}>This course has no sub-types.</span>
           : (
             <div className="subtype-checks__list">

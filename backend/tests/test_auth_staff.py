@@ -1,16 +1,41 @@
 """Action points 4, 5, 15: authentication seam, RBAC, 1 Admin + 4 Staff limit (incl. concurrency)."""
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 
-from sqlalchemy.exc import IntegrityError
+from psycopg import OperationalError as PsycopgOperationalError
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session
 
+from app.common import now
+from app.config import settings
 from app.db import SessionLocal
-from app.models import User
-from app.security import hash_password
+from app.models import User, UserSession
+from app.security import hash_password, token_hash
 from conftest import PASSWORD, Api, login, ok
 
 
 def new_staff(admin, name):
     return admin.post("/staff", json={"full_name": name.title(), "username": name, "designation": "Front Desk"})
+
+
+def test_login_pooler_password_failure_returns_safe_503(client, monkeypatch, caplog):
+    def cannot_connect(self, *args, **kwargs):
+        cause = PsycopgOperationalError("FATAL: password authentication failed for user \"postgres\" test-dsn-secret")
+        raise OperationalError(None, None, cause) from cause
+
+    monkeypatch.setattr(Session, "scalars", cannot_connect)
+    origin = settings.origins[0]
+    response = client.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD},
+                           headers={"Origin": origin})
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "DATABASE_UNAVAILABLE"
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+    assert response.headers["X-Request-ID"] in caplog.text
+    assert "database password authentication failed" in caplog.text
+    assert "in login" in caplog.text
+    assert "test-dsn-secret" not in caplog.text + response.text
+    assert PASSWORD not in caplog.text + response.text
 
 
 def test_unauthenticated_and_forbidden(client, make_staff):
@@ -33,6 +58,18 @@ def test_login_lockout_logout(client, admin):
     assert admin.get("/auth/me").status_code == 401
 
 
+def test_absolute_expiry_rejects_recently_active_session(admin):
+    with SessionLocal() as db:
+        session = db.scalar(select(UserSession).where(UserSession.token_hash == token_hash(admin.token)))
+        session.expires_at = now() - timedelta(seconds=1)
+        session.last_activity_at = now()
+        db.commit()
+
+    response = admin.get("/auth/me")
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "SESSION_INVALID"
+
+
 def test_change_password_idle_timeout_and_security_headers(client, admin):
     r = admin.post("/auth/change-password", json={"current_password": "wrong-one", "new_password": "brand-new-pass"})
     assert r.json()["error"]["code"] == "INVALID_CURRENT_PASSWORD"
@@ -42,9 +79,6 @@ def test_change_password_idle_timeout_and_security_headers(client, admin):
     assert other.get("/auth/me").status_code == 401 and admin.get("/auth/me").status_code == 200  # other devices signed out
     login(client, "admin", "brand-new-pass")
     with SessionLocal() as db:  # simulate 31 idle minutes
-        from datetime import timedelta
-        from app.models import UserSession
-        from app.common import now
         for s in db.query(UserSession):
             s.last_activity_at = now() - timedelta(minutes=31)
         db.commit()

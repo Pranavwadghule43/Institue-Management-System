@@ -8,7 +8,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 
 from sqlalchemy import (
-    JSON, BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Identity, Index, Integer,
+    JSON, BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint, Identity, Index, Integer,
     LargeBinary, Numeric, SmallInteger, String, Text, Time, UniqueConstraint, func, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -183,10 +183,15 @@ class Course(Base):
 
 class CourseSubtype(Base):
     __tablename__ = "course_subtypes"
-    __table_args__ = (UniqueConstraint("course_id", "name", name="course_subtypes_course_id_name_key"),)
+    __table_args__ = (
+        UniqueConstraint("course_id", "name", name="course_subtypes_course_id_name_key"),
+        UniqueConstraint("course_id", "id", name="course_subtypes_course_id_id_key"),
+        CheckConstraint("fee >= 0 AND fee <> 'NaN'::numeric", name="course_subtypes_fee_check"),
+    )
     id: Mapped[int] = pk()
     course_id: Mapped[int] = fk("courses.id", nullable=False)
     name: Mapped[str] = mapped_column(String(150))
+    fee: Mapped[Decimal | None] = mapped_column(MONEY)
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     created_at: Mapped[datetime] = created()
 
@@ -196,9 +201,12 @@ class TimeSlot(Base):
     __table_args__ = (
         CheckConstraint("capacity > 0", name="time_slots_capacity_check"),
         CheckConstraint("start_time >= '08:00:00' AND end_time <= '21:00:00' AND end_time > start_time", name="time_slots_check"),
+        ForeignKeyConstraint(["course_id", "course_subtype_id"], ["course_subtypes.course_id", "course_subtypes.id"],
+                             name="time_slots_course_subtype_fk"),
     )
     id: Mapped[int] = pk()
     course_id: Mapped[int] = fk("courses.id", nullable=False)
+    course_subtype_id: Mapped[int | None] = mapped_column(BigInteger)
     name: Mapped[str] = mapped_column(String(120))
     start_time: Mapped[time] = mapped_column(Time)
     end_time: Mapped[time] = mapped_column(Time)
@@ -211,6 +219,7 @@ class TimeSlot(Base):
     created_at: Mapped[datetime] = created()
 
     course: Mapped[Course] = relationship()
+    course_subtype: Mapped[CourseSubtype | None] = relationship(viewonly=True)
 
 
 class Enquiry(Base):

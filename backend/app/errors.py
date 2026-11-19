@@ -1,13 +1,43 @@
 import logging
+import traceback
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 log = logging.getLogger("ims")
+
+
+def database_unavailable(e: Exception) -> bool:
+    if not isinstance(e, DBAPIError):
+        return False
+    state = getattr(e.orig, "sqlstate", None)
+    # psycopg can omit SQLSTATE when the pooler rejects a connection before it opens.
+    return e.connection_invalidated or (
+        isinstance(e, OperationalError) and e.statement is None and (not state or state[:2] in {"08", "28"})
+    )
+
+
+def log_failure(logger: logging.Logger, context: str, e: Exception) -> None:
+    cause = e.orig if isinstance(e, DBAPIError) else e
+    state = getattr(cause, "sqlstate", None)
+    # DB error strings can contain connection details, bound values, and rejected rows.
+    # Log the exception types and stack frames without rendering exception messages or locals.
+    reason = "-"
+    if database_unavailable(e):
+        message = str(cause).lower()
+        if "password authentication failed" in message or state == "28P01":
+            reason = "database password authentication failed"
+        elif "failed to resolve host" in message:
+            reason = "database host resolution failed"
+        else:
+            reason = "database connection unavailable"
+    frames = "\n".join(f"  {frame.filename}:{frame.lineno} in {frame.name}" for frame in traceback.extract_tb(e.__traceback__))
+    logger.error("%s error=%s cause=%s sqlstate=%s reason=%s\n%s", context, type(e).__name__, type(cause).__name__,
+                 state or "-", reason, frames)
 
 
 class AppError(Exception):
@@ -84,5 +114,5 @@ def install(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, e: Exception):
-        log.exception("unhandled error on %s %s", request.method, request.url.path)
+        log_failure(log, f"unhandled error on {request.method} {request.url.path}", e)
         return JSONResponse(_body("INTERNAL_ERROR", "Something went wrong. Please try again."), status_code=500)

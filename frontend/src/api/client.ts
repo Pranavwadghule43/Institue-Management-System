@@ -1,7 +1,7 @@
 /* REST client for the FastAPI backend. All data comes from the server; nothing is computed or stored locally. */
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
-export const API_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1';
+export const API_URL: string = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000/api/v1';
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public fields: Record<string, string> = {}) {

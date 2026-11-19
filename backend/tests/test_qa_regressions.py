@@ -140,9 +140,10 @@ def test_server_error_keeps_cors_and_security_headers(raw, admin, course, monkey
     def boom(*_a, **_k):
         raise RuntimeError("simulated failure")
     monkeypatch.setattr(academics, "course_out", boom)  # any unexpected exception inside a route
-    r = raw.get("/api/v1/courses", headers={"Authorization": f"Bearer {admin.token}", "Origin": "http://localhost:5173"})
+    origin = "http://127.0.0.1:5173"
+    r = raw.get("/api/v1/courses", headers={"Authorization": f"Bearer {admin.token}", "Origin": origin})
     assert r.status_code == 500 and r.json()["error"]["code"] == "INTERNAL_ERROR"
-    assert r.headers.get("access-control-allow-origin") == "http://localhost:5173"
+    assert r.headers.get("access-control-allow-origin") == origin
     assert r.headers.get("x-content-type-options") == "nosniff" and r.headers.get("x-request-id")
 
 
