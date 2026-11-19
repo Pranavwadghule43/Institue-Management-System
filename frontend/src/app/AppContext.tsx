@@ -18,7 +18,7 @@ export const ADMIN_ONLY = new Set<string>(PERMISSIONS.find((g) => g.group === 'A
 
 type ToastKind = 'success' | 'error' | 'info';
 interface Toast { id: number; kind: ToastKind; title: string; body?: string }
-export interface User { id: number; name: string; username: string; role: Role; designation: string; permissions: string[] }
+export interface User { id: number; name: string; username: string; role: Role; designation: string; permissions: string[]; whatsappDocumentDelivery: boolean }
 
 interface Ctx {
   role: Role;
@@ -37,8 +37,11 @@ interface Ctx {
 const AppCtx = createContext<Ctx>(null!);
 export const useApp = () => useContext(AppCtx);
 
-const toUser = (m: Me): User => ({ id: m.id, name: m.full_name, username: m.username, role: m.role, designation: m.designation ?? '', permissions: m.permissions });
-const NOBODY: User = { id: 0, name: '', username: '', role: 'Staff', designation: '', permissions: [] };
+const toUser = (m: Me): User => ({
+  id: m.id, name: m.full_name, username: m.username, role: m.role, designation: m.designation ?? '',
+  permissions: m.permissions, whatsappDocumentDelivery: m.whatsapp_document_delivery ?? true,
+});
+const NOBODY: User = { id: 0, name: '', username: '', role: 'Staff', designation: '', permissions: [], whatsappDocumentDelivery: false };
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);

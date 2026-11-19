@@ -339,7 +339,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
           phone={shareBill.customer.whatsapp_number || shareBill.customer.mobile} recordLabel="customer’s profile"
           message={billMessage(shareBill)} pdf={() => billPdf(sharePrint)}
           automaticPath={shareBill.status === 'Paid' ? `/service-bills/${shareBill.code}/whatsapp-delivery` : undefined}
-          onOpened={() => api(`/service-bills/${shareBill.code}/share-events`, { method: 'POST', body: { event_type: 'WHATSAPP_OPENED' } }).catch(() => {})} />
+          onShared={(event_type) => api(`/service-bills/${shareBill.code}/share-events`, { method: 'POST', body: { event_type } }).catch(() => {})} />
       )}
 
       <Confirm open={payOpen} onClose={() => setPayOpen(false)} icon={<Check />} title={`Receive ${money(total)} from ${customer?.name}?`} body={`Full payment by ${PAY_LABEL[mode]}. The bill is locked once paid.`} confirmLabel="Confirm payment" busy={busy} onConfirm={pay}>

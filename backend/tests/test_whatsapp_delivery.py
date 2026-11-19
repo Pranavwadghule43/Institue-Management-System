@@ -83,6 +83,7 @@ def test_receipt_upload_and_verified_delivery(admin, client, student, make_staff
     requests = graph[0]
     path = receipt_path(student)
     attempt = action()
+    assert ok(admin.get("/auth/me"))["whatsapp_document_delivery"] is True
     assert make_staff(["fees.collect"]).post(path, json=attempt).status_code == 403
     assert admin.post(path, json=attempt | {"opted_in": False}).status_code == 400
     assert admin.post(path, json=attempt | {"recipient": "919811022334"}).status_code == 409
@@ -166,6 +167,7 @@ def test_concurrent_delivery_requests_submit_once(admin, student, graph):
 def test_disabled_mode_and_migration_rls(admin, student, monkeypatch):
     monkeypatch.setattr(settings, "whatsapp_enabled", False)
     path = receipt_path(student)
+    assert ok(admin.get("/auth/me"))["whatsapp_document_delivery"] is False
     assert not ok(admin.get(path))["available"]
     assert admin.post(path, json=action()).status_code == 503
     with engine.connect() as db:

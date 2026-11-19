@@ -24,6 +24,7 @@ from .db import get_db
 from .errors import AppError
 from .models import AuditLog, LoginAttempt, Permission, User, UserPermission, UserSession
 from .timing import timed_operation
+from .whatsapp_cloud import enabled as whatsapp_delivery_enabled
 
 # (code, description) grouped as in the React Permissions page.
 PERMISSIONS: list[tuple[str, str]] = [
@@ -178,7 +179,8 @@ def revoke_sessions(db: Session, user_id: int) -> None:
 
 def me_payload(u: CurrentUser) -> dict:
     return {"id": u.id, "username": u.username, "full_name": u.full_name, "role": role_label(u.role),
-            "designation": u.designation, "permissions": sorted(ALL_CODES if u.is_admin else u.permissions - ADMIN_ONLY)}
+            "designation": u.designation, "permissions": sorted(ALL_CODES if u.is_admin else u.permissions - ADMIN_ONLY),
+            "whatsapp_document_delivery": whatsapp_delivery_enabled()}
 
 
 # ----------------------------------------------------------------- auth routes

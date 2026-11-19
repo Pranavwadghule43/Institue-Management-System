@@ -12,7 +12,7 @@ export type Money = string;
 
 export interface Ref { id: number; name: string }
 
-export interface Me { id: number; username: string; full_name: string; role: Role; designation: string | null; permissions: string[] }
+export interface Me { id: number; username: string; full_name: string; role: Role; designation: string | null; permissions: string[]; whatsapp_document_delivery?: boolean }
 
 export interface Course {
   id: number; code: string; name: string; duration_months: number | null; fee: Money; description: string | null; is_active: boolean;

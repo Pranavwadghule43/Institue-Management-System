@@ -249,11 +249,12 @@ def cancel_bill(code: str, body: CancelIn, db: Session = Depends(get_db), user: 
 
 
 class ShareIn(In):
-    event_type: Literal["WHATSAPP_OPENED"] = "WHATSAPP_OPENED"
+    event_type: Literal["WHATSAPP_OPENED", "NATIVE_PDF_SHARE_OPENED"] = "WHATSAPP_OPENED"
 
 
 @router.post("/{code}/share-events", status_code=204)
 def bill_shared(code: str, body: ShareIn, db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_bill.create"))):
     b = get_bill(db, code)
-    audit(db, user.id, "BILL_SHARED", "Service Bill", b.bill_code, f"Bill {b.bill_code} opened in WhatsApp ({body.event_type})")
+    action = "device PDF sharing opened" if body.event_type == "NATIVE_PDF_SHARE_OPENED" else "opened in WhatsApp"
+    audit(db, user.id, "BILL_SHARED", "Service Bill", b.bill_code, f"Bill {b.bill_code} {action} ({body.event_type})")
     db.commit()

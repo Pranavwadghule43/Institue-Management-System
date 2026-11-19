@@ -74,7 +74,7 @@ def test_enquiry_list_queries_do_not_grow_with_rows(admin, course):
     assert len(big) == len(small), f"{len(small)} queries for 3 rows but {len(big)} for 18 rows: a per-row query (N+1) is back"
 
 
-@pytest.mark.parametrize("path,limit", [("/dashboard/admin", 12), ("/meta/sidebar", 2), ("/meta/notifications", 4),
+@pytest.mark.parametrize("path,limit", [("/dashboard/admin", 5), ("/meta/sidebar", 2), ("/meta/notifications", 4),
                                         ("/fees/reminders", 5), ("/expenses/summary", 3)])
 def test_dashboard_and_badges_stay_within_query_budget(admin, student, path, limit):
     with count_queries() as q:

@@ -190,7 +190,7 @@ export default function FeeCollection() {
         <WhatsAppSend open onClose={() => setWa(null)} title={`Send receipt ${wa.receipt_no}`} name={wa.snapshot.student.name} phone={wa.send_to?.whatsapp_number ?? sum?.student.whatsapp_number ?? wa.snapshot.student.mobile} recordLabel="student’s profile"
           message={receiptMessage(wa.snapshot)} pdf={() => receiptPdf(wa)}
           automaticPath={can('receipts.view_print') ? `/receipts/${wa.receipt_no}/whatsapp-delivery` : undefined}
-          onOpened={() => api(`/receipts/${wa.receipt_no}/share-events`, { method: 'POST', body: { event_type: 'WHATSAPP_OPENED' } }).catch(() => {})} />
+          onShared={(event_type) => api(`/receipts/${wa.receipt_no}/share-events`, { method: 'POST', body: { event_type } }).catch(() => {})} />
       )}
 
       <Modal open={!!done} onClose={() => setDone(null)}>

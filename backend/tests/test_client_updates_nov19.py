@@ -44,8 +44,11 @@ def test_sharing_changes_nothing_about_money(admin, course):
     code, no = out["student"]["code"], out["receipt"]["receipt_no"]
     before = ok(admin.get(f"/fees/students/{code}/summary"))
     receipts = ok(admin.get("/receipts"))["total"]
-    for _ in range(2):
-        assert admin.post(f"/receipts/{no}/share-events", json={"event_type": "WHATSAPP_OPENED"}).status_code == 204
+    for event in ("WHATSAPP_OPENED", "NATIVE_PDF_SHARE_OPENED"):
+        assert admin.post(f"/receipts/{no}/share-events", json={"event_type": event}).status_code == 204
+    assert admin.post(f"/receipts/{no}/share-events", json={"event_type": "DELIVERED"}).status_code == 422
+    log = ok(admin.get("/audit", params={"q": no}))["items"]
+    assert any(i["action"] == "RECEIPT_SHARED" and "device PDF sharing opened" in i["summary"] for i in log)
     after = ok(admin.get(f"/fees/students/{code}/summary"))
     assert after["total_paid"] == before["total_paid"] and after["balance"] == before["balance"]
     assert ok(admin.get("/receipts"))["total"] == receipts and ok(admin.get(f"/receipts/{no}"))["status"] == "Valid"
@@ -60,8 +63,10 @@ def test_paid_bill_share_uses_live_customer_whatsapp_and_preserves_payment(admin
     bill_path = f"/service-bills/{bill['code']}"
     paid = ok(admin.post(f"{bill_path}/pay", json={"payment_mode": "Cash"}))
     assert paid["customer"]["whatsapp_number"] == "9123456780"
-    for _ in range(2):
-        assert admin.post(f"{bill_path}/share-events", json={"event_type": "WHATSAPP_OPENED"}).status_code == 204
+    for event in ("WHATSAPP_OPENED", "NATIVE_PDF_SHARE_OPENED"):
+        assert admin.post(f"{bill_path}/share-events", json={"event_type": event}).status_code == 204
+    log = ok(admin.get("/audit", params={"q": bill["code"]}))["items"]
+    assert any(i["action"] == "BILL_SHARED" and "device PDF sharing opened" in i["summary"] for i in log)
     current = ok(admin.get(bill_path))
     assert current["status"] == "Paid" and current["payment"] == paid["payment"]
     assert current["items"] == paid["items"] and current["grand_total"] == paid["grand_total"]

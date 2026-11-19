@@ -33,6 +33,7 @@ export function AutomaticWhatsApp({ path, title, onClose, onManual }: {
   const [refresh, setRefresh] = useState(0);
   const status = view?.delivery?.status;
   const inProgress = status === 'pending' || status === 'submitted' || status === 'sent';
+  const alreadyRequested = !!status && status !== 'failed';
 
   useEffect(() => {
     if (busy) return;
@@ -47,6 +48,7 @@ export function AutomaticWhatsApp({ path, title, onClose, onManual }: {
           return;
         }
         setView(next);
+        setError('');
         if (next.delivery && ['pending', 'submitted', 'sent'].includes(next.delivery.status)) {
           timer = setTimeout(check, 5000);
         }
@@ -100,7 +102,7 @@ export function AutomaticWhatsApp({ path, title, onClose, onManual }: {
         {view && !phone && <p>Save a valid WhatsApp number on the recipient’s record to send automatically.</p>}
         {view?.delivery && <p role="status"><strong>{labels[view.delivery.status]}</strong> · Number ending {view.delivery.recipient_last4}</p>}
         {status === 'failed' && <p>{failureText(view?.delivery?.result_code ?? null)}</p>}
-        {status === 'pending' && <p>Wait for provider confirmation before sharing the PDF again.</p>}
+        {alreadyRequested && <p>Manual sharing is paused for this document while automatic delivery is recorded.</p>}
         {error && <p role="alert">{error} <button className="btn btn-ghost btn-sm" onClick={() => {
           setError('');
           setRefresh((value) => value + 1);
@@ -111,7 +113,7 @@ export function AutomaticWhatsApp({ path, title, onClose, onManual }: {
         </label>}
       </div>
       <div className="modal__foot">
-        <button className="btn btn-secondary" disabled={busy} onClick={() => onManual()}>Manual sharing</button>
+        <button className="btn btn-secondary" disabled={busy || alreadyRequested || (!view && !error)} onClick={() => onManual()}>Manual PDF sharing</button>
         {canSend && <button className="btn btn-whatsapp" disabled={busy || !consent} onClick={send}>
           {busy ? <span className="spinner" /> : <Send />} {status === 'failed' ? 'Retry PDF delivery' : 'Send PDF on WhatsApp'}
         </button>}

@@ -246,14 +246,14 @@ def receipt_row(db: Session, code: str, *, lock: bool = False):
 
 
 class ShareIn(In):
-    event_type: Literal["WHATSAPP_OPENED"] = "WHATSAPP_OPENED"
+    event_type: Literal["WHATSAPP_OPENED", "NATIVE_PDF_SHARE_OPENED"] = "WHATSAPP_OPENED"
 
 
 @router.post("/receipts/{code}/share-events", status_code=204)
 def receipt_shared(code: str, body: ShareIn, db: Session = Depends(get_db), user: CurrentUser = Depends(require("receipts.view_print"))):
     r, _ = _receipt(db, code)
-    # Opening wa.me is recorded as "opened", never as sent/delivered.
-    audit(db, user.id, "RECEIPT_SHARED", "Payment", r.receipt_code, f"Receipt {r.receipt_code} opened in WhatsApp ({body.event_type})")
+    action = "device PDF sharing opened" if body.event_type == "NATIVE_PDF_SHARE_OPENED" else "opened in WhatsApp"
+    audit(db, user.id, "RECEIPT_SHARED", "Payment", r.receipt_code, f"Receipt {r.receipt_code} {action} ({body.event_type})")
     db.commit()
 
 

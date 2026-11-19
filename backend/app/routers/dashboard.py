@@ -2,7 +2,7 @@
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import exists, func, or_, select, true
 from sqlalchemy.orm import Session, joinedload
 
 from ..common import PAY_LABEL, ZERO, bounds, like, money, one_trip, today, user_ref
@@ -51,45 +51,57 @@ def admin_dashboard(trend_days: int = Query(14, ge=1, le=90), db: Session = Depe
     live = Student.deleted_at.is_(None)
     f = fee_cols(t)
     start, end = bounds(t, t)
-    # Every single-number figure on this page in ONE round trip (performance); each statement is unchanged.
-    (pending, unpaid_count, unpaid_sum, total_students, active_students, admissions_today, admissions_month, overdue_students,
-     completed_today, *money_today_yesterday) = one_trip(
-        db,
-        f.join(select(func.coalesce(func.sum(f.balance), 0)).select_from(Student)).where(live, Student.status == "Active"),
-        select(func.count()).where(ServiceBill.status == "Unpaid"),
-        select(func.coalesce(func.sum(ServiceBill.grand_total), 0)).where(ServiceBill.status == "Unpaid"),
-        select(func.count()).where(live),
-        select(func.count()).where(live, Student.status == "Active"),
-        select(func.count()).where(live, Student.admission_date == t),
-        select(func.count()).where(live, Student.admission_date >= t.replace(day=1)),
-        fee_state_count_stmt(("Overdue",)),
-        select(func.count(func.distinct(ServiceJobEvent.job_id))).where(
-            ServiceJobEvent.new_status == "Completed", ServiceJobEvent.created_at >= start, ServiceJobEvent.created_at < end),
-        *totals_stmts(t, t), *totals_stmts(yesterday, yesterday),
-    )
-    now_, prev = totals_from(*money_today_yesterday[:3]), totals_from(*money_today_yesterday[3:])
-    last = db.execute(select(P, FeeReceipt.receipt_code, User.full_name).join(FeeReceipt, FeeReceipt.payment_id == P.id)
-                      .outerjoin(User, User.id == P.collected_by)
-                      .where(P.status == "Valid", P.received_at >= start, P.received_at < end).order_by(P.received_at.desc()).limit(1)).first()
-    jobs = dict(db.execute(select(ServiceJob.status, func.count()).group_by(ServiceJob.status)).all())
+    students = select(
+        func.count().label("total_students"),
+        func.count().filter(Student.status == "Active").label("active_students"),
+        func.count().filter(Student.admission_date == t).label("admissions_today"),
+        func.count().filter(Student.admission_date >= t.replace(day=1)).label("admissions_this_month"),
+    ).where(live).subquery()
+    fees = f.join(select(
+        func.coalesce(func.sum(f.balance), 0).label("pending"),
+        func.count().filter(f.state == "Overdue").label("overdue"),
+    ).select_from(Student)).where(live, Student.status == "Active").subquery()
+    bills = select(func.count().label("unpaid_count"), func.coalesce(func.sum(ServiceBill.grand_total), 0).label("unpaid_sum")
+                   ).where(ServiceBill.status == "Unpaid").subquery()
+    statuses = ("Pending", "In Process", "On Hold", "Completed", "Cancelled")
+    jobs = select(*(func.count().filter(ServiceJob.status == status).label(status) for status in statuses)).subquery()
+    completed = select(func.count(func.distinct(ServiceJobEvent.job_id))).where(
+        ServiceJobEvent.new_status == "Completed", ServiceJobEvent.created_at >= start,
+        ServiceJobEvent.created_at < end).scalar_subquery()
+    last = (select(P.received_at, P.amount, P.collected_by, FeeReceipt.receipt_code, User.full_name)
+            .join(FeeReceipt, FeeReceipt.payment_id == P.id).outerjoin(User, User.id == P.collected_by)
+            .where(P.status == "Valid", P.received_at >= start, P.received_at < end)
+            .order_by(P.received_at.desc()).limit(1).subquery())
+    totals = [stmt.scalar_subquery().label(f"money_{i}")
+              for i, stmt in enumerate((*totals_stmts(t, t), *totals_stmts(yesterday, yesterday)))]
+    # The aggregates each return one row. Preserve that row when no receipt exists today.
+    row = db.execute(
+        select(students, fees, bills, jobs, last, completed.label("completed_today"), *totals)
+        .select_from(students).join(fees, true()).join(bills, true()).join(jobs, true()).outerjoin(last, true())
+    ).mappings().one()
+    now_ = totals_from(*(row[f"money_{i}"] for i in range(3)))
+    prev = totals_from(*(row[f"money_{i}"] for i in range(3, 6)))
+    names = {row["collected_by"]: row["full_name"]} if row["full_name"] is not None else {}
     return {
         "kpis": {
-            "total_students": total_students,
-            "active_students": active_students,
-            "admissions_today": admissions_today,
-            "pending_fees": money(pending),
+            "total_students": row["total_students"],
+            "active_students": row["active_students"],
+            "admissions_today": row["admissions_today"],
+            "pending_fees": money(row["pending"]),
             "fee_collection_today": money(now_["fees"]), "service_income_today": money(now_["services"]),
             "expenses_today": money(now_["expenses"]), "net_income_today": money(now_["net"]),
         },
-        "admissions_this_month": admissions_month,
-        "overdue_students": overdue_students or 0,
-        "last_receipt": None if last is None else {"receipt_no": last[1], "at": last[0].received_at, "amount": money(last[0].amount),
-                                                   "by": user_ref({last[0].collected_by: last[2]} if last[2] is not None else {}, last[0].collected_by)},
+        "admissions_this_month": row["admissions_this_month"],
+        "overdue_students": row["overdue"],
+        "last_receipt": None if row["receipt_code"] is None else {
+            "receipt_no": row["receipt_code"], "at": row["received_at"], "amount": money(row["amount"]),
+            "by": user_ref(names, row["collected_by"]),
+        },
         "trend": [money_dict(d) for d in series(db, t - timedelta(days=trend_days - 1), t, "day")],
-        "service_status_counts": {s: jobs.get(s, 0) for s in ("Pending", "In Process", "On Hold", "Completed", "Cancelled")},
+        "service_status_counts": {status: row[status] for status in statuses},
         "service_desk": {
-            "completed_today": completed_today,
-            "unpaid_bills": unpaid_count, "pending_amount": money(unpaid_sum)},
+            "completed_today": row["completed_today"],
+            "unpaid_bills": row["unpaid_count"], "pending_amount": money(row["unpaid_sum"])},
         "fee_followups": followups(db, 8),
         "recent_activity": recent_audit(db, 5) if user.can("audit.view") else [],
         "comparisons": {"today": money_dict(now_), "yesterday": money_dict(prev)},

@@ -76,3 +76,29 @@ The full isolated backend suite passed 131 tests with five expected failures. Th
 Supabase migration `20261119181440` is recorded on project `tiusjvbrbjsxfmvhursm`. The new table is owned by `postgres` and has row-level security enabled. The API roles and the developer database role have no read access. The table had zero delivery records at verification. The Supabase advisor notes that the table has no RLS policy, which is deliberate for owner-only access under the current configuration. [Supabase Data API security](https://supabase.com/docs/guides/api/securing-your-api)
 
 The frontend tests passed 5/5 and the TypeScript production build succeeded. The live development backend returned HTTP 200 for application and database health, and accepted the exact frontend origin `http://localhost:5173`. An active, unlocked Admin account with a previous sign-in was confirmed through a read-only query. Browser authentication used the isolated Admin fixture because the live Admin password was unavailable.
+
+## Native PDF sharing correction
+
+The earlier IMS version passed the generated receipt or bill to `navigator.share()` as a PDF file. The correction restores
+that file handoff and its editable caption. Device sharing depends on browser file support and on the device supplying
+WhatsApp as a share target. The operator chooses the target and contact. The standard exposes file, title, text, and URL
+fields and delegates target selection to the device. WhatsApp Click to Chat can open an unsaved number and prefill text.
+[Web Share API](https://www.w3.org/TR/web-share/) · [Microsoft Edge file sharing](https://learn.microsoft.com/en-us/microsoft-edge/progressive-web-apps/how-to/share) · [WhatsApp Click to Chat](https://faq.whatsapp.com/5913398998672934)
+
+The portal records device handoff and chat opening as separate audit events. Signed Meta statuses govern the automatic
+delivery record. The UI disables a second send and manual sharing for tracked attempts with a pending or successful outcome.
+With Cloud API disabled at sign-in, the portal starts preparing the attached PDF immediately using the availability flag on
+the existing auth response. The receipt and paid-bill Cloud API routes continue to validate and select the registered number.
+
+Five alternating runs per build in fresh Edge contexts measured 1,713.13 ms before and 1,628.16 ms after from opening
+receipt sharing to a usable PDF action, a 5.0% median improvement. Ranges overlapped, at 1,702–2,442 ms before and
+1,242–2,296 ms after. The disabled-integration path dropped from one WhatsApp status request to zero in every run.
+Edge reported PDF file-sharing support on the Windows test host. An instrumented share target verified the generated
+receipt and bill PDFs, filenames, MIME types, and captions, and checked cancellation and the unsupported-device fallback.
+The browser also verified both automatic document submissions using a mocked Meta provider, with repeat sends blocked.
+
+The dashboard still had two standalone SQL calls for the latest receipt and job counts. Its summary also scanned the
+same student, fee and unpaid bill populations for separate figures. The correction returns these aggregates and the
+optional latest receipt together. On the same disposable database with 26 seeded admissions, 30 alternating measured
+requests per version returned identical data and reduced SQL executions from 7 to 5. The median fell from 38.23 ms to
+33.42 ms (12.6%) and p90 from 43.98 ms to 39.81 ms. The comparison also checked identical empty-database responses.

@@ -48,8 +48,14 @@ a fifth staff account returns `409 STAFF_ACCOUNT_LIMIT_REACHED`, and disabled st
 
 ## Automatic WhatsApp PDFs
 
-The manual **Open Chat & Save PDF** option is available by default. Enable automatic delivery only after the dedicated
-delivery-table migration is reviewed and applied and the following server-side settings are ready.
+On a browser that supports sharing PDF files, **Share PDF on WhatsApp** passes the generated file to the device's share
+window. The operator chooses WhatsApp and the contact and presses Send. The browser records the handoff as opened.
+**Open Chat & Save PDF** opens the registered number's chat and downloads the PDF for manual attachment when a device share
+target is unavailable. The [Web Share standard](https://www.w3.org/TR/web-share/) leaves target selection to the device and
+[WhatsApp Click to Chat](https://faq.whatsapp.com/5913398998672934) accepts a number and optional prefilled text.
+
+Automatic delivery uses the registered number and sends the PDF without a device share window or contact search. Enable it
+after the delivery-table migration is reviewed and applied and the following server-side settings are ready.
 
 | Setting | Value |
 |---|---|
@@ -130,7 +136,7 @@ Routers hold both the route and its business rules; there is no separate reposit
 - **Installments**: split keeps the rule of the original UI demo (`admitStudent`) (multiples of 50, last row takes the rest, month-end clamping). Allocation is FIFO and rebuilt after every payment or reversal, so `paid_amount` always equals valid payments.
 - **Idempotency**: `Idempotency-Key` header on fee payments, admissions and bill payments. A replay returns the original with `"replayed": true`.
 - **Dates**: stored UTC, day boundaries in `INSTITUTE_TIMEZONE`.
-- Manual WhatsApp sharing records the chat open. Automatic delivery has its own delivery history and signed statuses. The browser
+- Manual WhatsApp sharing records a device share handoff or a chat open. Automatic delivery has its own delivery history and signed statuses. The browser
   still renders the printable A5 PDFs. Backup shows run history. Service cost and profit report `pending_cost_rule` while the cost rule is pending.
 
 ## Requests for Pranav (schema; nothing was changed by this backend)
