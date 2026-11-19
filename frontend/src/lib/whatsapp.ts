@@ -8,6 +8,14 @@ export function waLink(phone: string, text: string) {
   return `https://wa.me/${full}?text=${encodeURIComponent(text)}`;
 }
 
+/** Same number rules as the fee reminder (waLink): 10 digits starting 6-9, an optional 91 / +91 in front. */
+export function waNumber(raw: string | null | undefined): { local: string; problem: string | null } {
+  const digits = (raw ?? '').replace(/\D/g, '');
+  const local = digits.length === 12 && digits.startsWith('91') ? digits.slice(2) : digits.length === 11 && digits.startsWith('0') ? digits.slice(1) : digits;
+  if (!local) return { local, problem: 'missing' };
+  return { local, problem: /^[6-9]\d{9}$/.test(local) ? null : 'invalid' };
+}
+
 export const INSTITUTE = 'Updaate Computers';
 
 export function feeReminderText(name: string, amount: number | string, due: Date | string, balance: number | string) {

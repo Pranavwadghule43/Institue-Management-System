@@ -43,8 +43,16 @@ export default function Admission() {
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((x) => ({ ...x, [k]: v }));
 
   const course = courses?.find((c) => String(c.id) === f.courseId) ?? null;
-  const batch = slots?.find((s) => String(s.id) === f.batchId) ?? null;
-  const fee = n(course?.fee);
+  // 19 Nov: a sub-type batch fits only students who tick that sub-type; whole-course batches fit everyone (same rule as the server)
+  const fitting = slots?.filter((b) => !b.course_subtype || f.subtypeIds.includes(b.course_subtype.id));
+  const batch = fitting?.find((s) => String(s.id) === f.batchId) ?? null;
+  useEffect(() => {
+    if (f.batchId && fitting && !batch) set('batchId', '');
+  }, [f.subtypeIds, slots]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 19 Nov (client): ticked sub-types with their own fee replace the course fee, each counted once (server: admission_fee)
+  const priced = (subtypes ?? []).filter((s) => f.subtypeIds.includes(s.id) && s.fee !== null);
+  const fee = priced.length ? priced.reduce((t, s) => t + n(s.fee), 0) : n(course?.fee);
+  const feeBasis = priced.length ? priced.map((s) => `${s.name} ${money(s.fee!)}`).join(' + ') : course ? 'Course fee' : undefined;
   const discount = Number(f.discount || 0);
   const net = Math.max(0, fee - discount);
   const initial = Number(f.initial || 0);
@@ -191,7 +199,7 @@ export default function Admission() {
                 <Field label="Batch" required error={err('batchId', 'time_slot_id')} htmlFor="batch" hint={batch ? `${batch.timing} · ${batch.days}${batch.faculty ? ` · ${batch.faculty}` : ''}` : !f.courseId ? 'Choose a course first' : slots && !slots.length ? 'This course has no active time slots yet' : undefined}>
                   <select id="batch" className="select" value={f.batchId} disabled={!f.courseId} onChange={(e) => set('batchId', e.target.value)}>
                     <option value="">Select batch…</option>
-                    {slots?.map((b) => <option key={b.id} value={b.id}>{b.name} · {b.timing} · {b.seats_left} seats left</option>)}
+                    {fitting?.map((b) => <option key={b.id} value={b.id}>{b.name}{b.course_subtype ? ` (${b.course_subtype.name})` : ''} · {b.timing} · {b.seats_left} seats left</option>)}
                   </select>
                 </Field>
                 <SubtypeChecks courseId={f.courseId} value={f.subtypeIds} onChange={(ids) => set('subtypeIds', ids)} error={serverErrors.course_subtype_ids ?? serverErrors.course_subtype_id} />
@@ -215,7 +223,7 @@ export default function Admission() {
                 </div>
               </div>
               <div className="form-grid cols-3">
-                <Field label="Course fee" htmlFor="cf">
+                <Field label="Course fee" htmlFor="cf" hint={feeBasis}>
                   <div className="input-group">
                     <span className="input-prefix">₹</span>
                     <input id="cf" className="input num" readOnly value={fee ? fee.toLocaleString('en-IN') : '—'} />

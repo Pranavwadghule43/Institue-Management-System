@@ -479,7 +479,7 @@ function ChangeSlot({ open, s, onClose }: { open: boolean; s: Student; onClose: 
         <Field label="New time slot" required htmlFor="cs-slot">
           <select id="cs-slot" className="select" value={slot} onChange={(e) => setSlot(e.target.value)}>
             <option value="">Select…</option>
-            {slots?.filter((x) => x.id !== s.time_slot.id).map((x) => <option key={x.id} value={x.id}>{x.name} · {x.timing} · {x.seats_left} seats left</option>)}
+            {slots?.filter((x) => x.id !== s.time_slot.id).map((x) => <option key={x.id} value={x.id}>{x.name}{x.course_subtype ? ` (${x.course_subtype.name})` : ''} · {x.timing} · {x.seats_left} seats left</option>)}
           </select>
         </Field>
         <Field label="Reason" htmlFor="cs-r"><textarea id="cs-r" className="textarea" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>

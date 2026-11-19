@@ -149,7 +149,8 @@ export function ReceiptView() {
         onClose={() => setWa(false)}
         title={`Send receipt ${r.receipt_no}`}
         name={s.student.name}
-        phone={s.student.mobile}
+        phone={r.send_to?.whatsapp_number ?? s.student.mobile}
+        recordLabel="student’s profile"
         message={receiptMessage(s)}
         pdf={() => receiptPdf(r)}
         onOpened={() => {

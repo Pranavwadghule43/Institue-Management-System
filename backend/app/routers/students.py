@@ -18,7 +18,7 @@ from ..db import get_db
 from ..errors import AppError, bad, conflict, not_found
 from ..ledger import INSTALLMENT_NO_OFFSET, fee_cols, fee_summary, pct, reallocate
 from ..models import (
-    CourseSubtype, Enquiry, EnquiryActivity, FeeReceipt, FeeReminderEvent, AuditLog, Student, StudentInstallment, StudentPayment,
+    Course, CourseSubtype, Enquiry, EnquiryActivity, FeeReceipt, FeeReminderEvent, AuditLog, Student, StudentInstallment, StudentPayment,
     StudentPaymentAllocation,
     StudentTimeSlotHistory, TimeSlot,
 )
@@ -130,11 +130,21 @@ def subtypes_out(items: list[CourseSubtype]) -> list[dict]:
     return [{"id": st.id, "name": st.name} for st in items]
 
 
-def valid_slot(db: Session, slot_id: int, course_id: int) -> TimeSlot:
+def valid_slot(db: Session, slot_id: int, course_id: int, subtype_ids: list[int] | None = None) -> TimeSlot:
     slot = db.get(TimeSlot, slot_id)
     if slot is None or slot.course_id != course_id or not slot.is_active or slot_status(slot, today()) == "Completed":
         raise bad("INVALID_TIME_SLOT", "Choose a valid time slot for the course.", "time_slot_id")
+    # 19 Nov: a sub-type slot fits only students who ticked that sub-type; a whole-course slot fits everyone.
+    if subtype_ids is not None and slot.course_subtype_id is not None and slot.course_subtype_id not in subtype_ids:
+        raise bad("SLOT_SUBTYPE_MISMATCH", "This batch is for another sub-type. Choose a batch for the ticked sub-types.", "time_slot_id")
     return slot
+
+
+def admission_fee(course: Course, chosen: list[CourseSubtype]) -> Decimal:
+    """19 Nov (client): ticked sub-types that have their own fee replace the course fee, each counted once; if none of
+    them has a fee, the course fee applies as before."""
+    priced = {st.id: st.fee for st in chosen if st.fee is not None}
+    return sum(priced.values(), ZERO) if priced else course.fee
 
 
 def capacity_warning(db: Session, slot: TimeSlot) -> bool:
@@ -156,15 +166,15 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
             receipt = db.scalars(select(FeeReceipt).where(FeeReceipt.payment_id == prior.id)).first()
             return {"student": student_out(s), "fees": fee_summary(db, s, today()), "capacity_warning": False,
                     "payment": payment_out(prior, receipt.receipt_code if receipt else None, s, user_names(db, [prior.collected_by])),
-                    "receipt": receipt_out(receipt, prior) if receipt else None, "replayed": True}
+                    "receipt": receipt_out(receipt, prior, s) if receipt else None, "replayed": True}
     if e.status == "Converted" or db.scalar(select(Student.id).where(Student.enquiry_id == e.id)):
         raise conflict("ENQUIRY_ALREADY_CONVERTED", "This enquiry is already converted to a student.")
     if e.course_id and e.course_id != body.course_id:
         raise bad("COURSE_MISMATCH", "The admission course must match the enquiry course.", "course_id")
     chosen = check_subtypes(db, body.course_id, wanted_subtypes(body.course_subtype_ids, body.course_subtype_id))
     course = get_course(db, body.course_id)
-    slot = valid_slot(db, body.time_slot_id, course.id)
-    fee = course.fee
+    slot = valid_slot(db, body.time_slot_id, course.id, [st.id for st in chosen])
+    fee = admission_fee(course, chosen)
     if body.discount > fee:
         raise bad("DISCOUNT_EXCEEDS_FEE", "Discount can't exceed the course fee.", "discount")
     net = fee - body.discount
@@ -218,7 +228,7 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
     db.commit()
     return {"student": student_out(s), "fees": fee_summary(db, s, today()), "capacity_warning": warn,
             "payment": payment_out(payment, receipt.receipt_code, s, {user.id: user.full_name}) if payment else None,
-            "receipt": receipt_out(receipt, payment) if receipt else None, "replayed": False}
+            "receipt": receipt_out(receipt, payment, s) if receipt else None, "replayed": False}
 
 
 class StudentCreateIn(AdmissionIn):

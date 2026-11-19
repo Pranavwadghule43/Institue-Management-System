@@ -2090,3 +2090,11 @@ html[data-theme='dark'] .toast {
 .subtype-checks__list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
 .subtype-checks__item { padding: 7px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
 .subtype-checks__item.is-on { border-color: var(--primary-600); background: var(--primary-50); }
+
+/* WhatsApp send: what happens after the chat opens (19 Nov) */
+.wa-steps__list { margin: 0; padding-left: 0; list-style: none; counter-reset: wa; display: grid; gap: 10px; font-size: 13.5px; }
+.wa-steps__list li { counter-increment: wa; position: relative; padding-left: 34px; line-height: 1.45; }
+.wa-steps__list li::before { content: counter(wa); position: absolute; left: 0; top: -1px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; background: var(--surface-2); border: 1px solid var(--line); }
+.wa-steps__list li.is-done::before { content: '✓'; background: #1fa855; border-color: #1fa855; color: #fff; }
+.wa-steps .callout { margin-bottom: 12px; }
+.subtype-edit { border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px; display: grid; gap: 8px; background: var(--surface-2); }

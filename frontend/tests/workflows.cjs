@@ -26,3 +26,17 @@ test('course time slots respect 8 AM to 9 PM and allow variable duration', () =>
   assert.equal(formatInstituteSlot('08:00', '09:30'), '8:00 AM – 9:30 AM');
   assert.equal(addMonthsClamped(new Date(2026, 0, 31), 1).getDate(), 28);
 });
+
+// 19 Nov: bills and receipts open the chat for the registered number the same way the fee reminder does.
+const { waLink, waNumber } = loadSource('src/lib/whatsapp.ts');
+
+test('WhatsApp numbers follow the fee-reminder rules and open the exact chat', () => {
+  assert.deepEqual(waNumber('98765 43210'), { local: '9876543210', problem: null });
+  assert.deepEqual(waNumber('+91 98765 43210'), { local: '9876543210', problem: null });
+  assert.deepEqual(waNumber('09876543210'), { local: '9876543210', problem: null });
+  assert.equal(waNumber('').problem, 'missing');
+  assert.equal(waNumber(null).problem, 'missing');
+  assert.equal(waNumber('12345').problem, 'invalid');
+  assert.equal(waNumber('5876543210').problem, 'invalid');
+  assert.equal(waLink('9876543210', 'Bill SB-1'), 'https://wa.me/919876543210?text=Bill%20SB-1');
+});

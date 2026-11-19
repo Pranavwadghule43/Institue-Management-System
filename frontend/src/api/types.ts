@@ -16,11 +16,11 @@ export interface Me { id: number; username: string; full_name: string; role: Rol
 
 export interface Course {
   id: number; code: string; name: string; duration_months: number | null; fee: Money; description: string | null; is_active: boolean;
-  active_students?: number; time_slots?: number; subtypes?: { id: number; name: string }[];
+  active_students?: number; time_slots?: number; subtypes?: { id: number; name: string; fee: Money | null }[];
 }
-export interface Subtype { id: number; course_id: number; name: string; is_active: boolean }
+export interface Subtype { id: number; course_id: number; name: string; fee: Money | null; is_active: boolean } // fee: 19 Nov, null = course fee applies
 export interface TimeSlot {
-  id: number; course_id: number; name: string; start_time: string; end_time: string; timing: string; days: string; faculty: string | null;
+  id: number; course_id: number; course_subtype?: { id: number; name: string } | null; name: string; start_time: string; end_time: string; timing: string; days: string; faculty: string | null;
   capacity: number; start_date: string | null; end_date: string | null; is_active: boolean; status: 'Running' | 'Upcoming' | 'Completed';
   assigned_students?: number; seats_left?: number; course?: { id: number; code: string; name: string };
 }
@@ -67,6 +67,7 @@ export interface ReceiptSnapshot {
 export interface Receipt {
   receipt_no: string; payment_id: number; issued_at: string; status: 'Valid' | 'Reversed'; reversed_at: string | null; reversal_reason: string | null;
   next_payment_date: string; snapshot: ReceiptSnapshot;
+  send_to?: { name: string; whatsapp_number: string } | null; // live registered WhatsApp number (19 Nov)
 }
 
 export interface Customer {

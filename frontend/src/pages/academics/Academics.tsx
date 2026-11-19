@@ -15,7 +15,7 @@ export function Courses() {
   const [edit, setEdit] = useState<Course | 'new' | null>(null);
   const [del, setDel] = useState<Course | null>(null);
   const [subCourse, setSubCourse] = useState<Course | null>(null);
-  const [slotOpen, setSlotOpen] = useState(false);
+  const [slotOpen, setSlotOpen] = useState<TimeSlot | 'new' | null>(null);
   const { data: courses, error, loading, reload } = useQuery<Course[]>('/courses');
   const { data: slots } = useQuery<TimeSlot[]>('/time-slots', { include_completed: false });
   const manageSlots = can('batches.manage') || can('courses.manage');
@@ -68,7 +68,7 @@ export function Courses() {
                       </div>
                     </td>
                     <td style={{ whiteSpace: 'normal' }}>
-                      {c.subtypes?.map((s) => <span className="tag" key={s.id} style={{ marginRight: 4 }}>{s.name}</span>)}
+                      {c.subtypes?.map((s) => <span className="tag" key={s.id} style={{ marginRight: 4 }}>{s.name}{s.fee !== null && <span className="muted"> · {money(s.fee)}</span>}</span>)}
                       <button className="btn btn-ghost btn-sm" onClick={() => setSubCourse(c)}><Plus /> Manage</button>
                     </td>
                     <td>{c.duration_months ? `${c.duration_months} months` : '—'}</td>
@@ -92,13 +92,13 @@ export function Courses() {
       </section>
 
       <section className="panel" style={{ marginTop: 18 }}>
-        <div className="panel__head"><div><h2>Scheduled time slots</h2><p>Students assigned by time slot; these are enrolment counts, not attendance.</p></div>{manageSlots && <button className="btn btn-primary" onClick={() => setSlotOpen(true)} disabled={!courses?.some((c) => c.is_active)}><Plus /> Add time slot</button>}</div>
+        <div className="panel__head"><div><h2>Scheduled time slots</h2><p>Students assigned by time slot; these are enrolment counts, not attendance.</p></div>{manageSlots && <button className="btn btn-primary" onClick={() => setSlotOpen('new')} disabled={!courses?.some((c) => c.is_active)}><Plus /> Add time slot</button>}</div>
         {slots && !slots.length ? <Empty icon={<BookOpen />} title="No time slots yet" body="Add a time slot (batch) for a course before admitting students." /> : (
-          <div className="table-wrap"><table className="table"><thead><tr><th>Time slot</th><th>Timing</th><th>Course</th><th>Days</th><th>Faculty</th><th className="ta-r">Students assigned</th><th className="ta-r">Capacity</th><th>Active</th></tr></thead><tbody>{slots?.map((b) => <tr key={b.id} style={!b.is_active ? { opacity: 0.6 } : undefined}><td style={{ fontWeight: 600 }}>{b.name}</td><td>{b.timing}</td><td>{b.course?.name}</td><td>{b.days}</td><td>{b.faculty ?? '—'}</td><td className="ta-r"><Link to={`/students?course=${b.course_id}&batch=${b.id}`}>{b.assigned_students}</Link></td><td className="ta-r num">{b.capacity}</td><td>{manageSlots ? <Switch on={b.is_active} label={`${b.name} active`} onChange={async (v) => { try { await write(api(`/time-slots/${b.id}/${v ? 'activate' : 'deactivate'}`, { method: 'POST' })); } catch (e) { toast('error', errText(e)); } }} /> : b.is_active ? 'Yes' : 'No'}</td></tr>)}</tbody></table></div>
+          <div className="table-wrap"><table className="table"><thead><tr><th>Time slot</th><th>Timing</th><th>Course · sub-type</th><th>Days</th><th>Faculty</th><th className="ta-r">Students assigned</th><th className="ta-r">Capacity</th><th>Active</th>{manageSlots && <th className="ta-r" />}</tr></thead><tbody>{slots?.map((b) => <tr key={b.id} style={!b.is_active ? { opacity: 0.6 } : undefined}><td style={{ fontWeight: 600 }}>{b.name}</td><td>{b.timing}</td><td>{b.course?.name}<div style={{ fontSize: 12 }}>{b.course_subtype ? <span className="tag">{b.course_subtype.name}</span> : <span className="muted">Whole course</span>}</div></td><td>{b.days}</td><td>{b.faculty ?? '—'}</td><td className="ta-r"><Link to={`/students?course=${b.course_id}&batch=${b.id}`}>{b.assigned_students}</Link></td><td className="ta-r num">{b.capacity}</td><td>{manageSlots ? <Switch on={b.is_active} label={`${b.name} active`} onChange={async (v) => { try { await write(api(`/time-slots/${b.id}/${v ? 'activate' : 'deactivate'}`, { method: 'POST' })); } catch (e) { toast('error', errText(e)); } }} /> : b.is_active ? 'Yes' : 'No'}</td>{manageSlots && <td className="ta-r"><Menu><button className="menu__item" onClick={() => setSlotOpen(b)}><Pencil /> Edit time slot</button></Menu></td>}</tr>)}</tbody></table></div>
         )}
       </section>
 
-      <SlotDrawer open={slotOpen} onClose={() => setSlotOpen(false)} courses={(courses ?? []).filter((c) => c.is_active)} />
+      <SlotDrawer slot={slotOpen} onClose={() => setSlotOpen(null)} courses={(courses ?? []).filter((c) => c.is_active)} />
       <SubtypeDrawer course={subCourse} onClose={() => setSubCourse(null)} />
       <CourseDrawer course={edit} onClose={() => setEdit(null)} />
 
@@ -180,16 +180,36 @@ function CourseDrawer({ course, onClose }: { course: Course | 'new' | null; onCl
   );
 }
 
+// 19 Nov (client): each sub-type can have its own fee. When a student ticks priced sub-types at admission, their fees
+// (each once) replace the course fee; with no priced sub-type ticked the course fee applies, as before.
 function SubtypeDrawer({ course, onClose }: { course: Course | null; onClose: () => void }) {
   const { toast } = useApp();
   const [name, setName] = useState('');
+  const [fee, setFee] = useState<number | ''>('');
+  const [editing, setEditing] = useState<{ id: number; name: string; fee: number | '' } | null>(null);
   const { data: subtypes } = useQuery<Subtype[]>(course ? `/courses/${course.id}/subtypes` : null);
+  useEffect(() => {
+    setName('');
+    setFee('');
+    setEditing(null);
+  }, [course]);
   const add = async () => {
     if (!name.trim()) return;
     try {
-      await write(api(`/courses/${course!.id}/subtypes`, { method: 'POST', body: { name } }));
-      toast('success', 'Sub-type added', name.trim());
+      await write(api(`/courses/${course!.id}/subtypes`, { method: 'POST', body: { name: name.trim(), fee: fee === '' ? null : String(fee) } }));
+      toast('success', 'Sub-type added', `${name.trim()}${fee === '' ? '' : ` · ${money(fee)}`}`);
       setName('');
+      setFee('');
+    } catch (e) {
+      toast('error', errText(e));
+    }
+  };
+  const save = async () => {
+    if (!editing || !editing.name.trim()) return;
+    try {
+      await write(api(`/course-subtypes/${editing.id}`, { method: 'PATCH', body: { name: editing.name.trim(), fee: editing.fee === '' ? null : String(editing.fee) } }));
+      toast('success', 'Sub-type saved', editing.name.trim());
+      setEditing(null);
     } catch (e) {
       toast('error', errText(e));
     }
@@ -197,43 +217,98 @@ function SubtypeDrawer({ course, onClose }: { course: Course | null; onClose: ()
   return (
     <Drawer open={!!course} onClose={onClose} title="Course sub-types" sub={course?.name ?? ''} foot={<button className="btn btn-secondary" onClick={onClose}>Done</button>}>
       <div className="stack">
-        {subtypes?.map((s) => (
+        <p className="muted" style={{ fontSize: 13, margin: 0 }}>
+          A sub-type fee replaces the course fee ({course ? money(course.fee) : ''}) for students who tick it; several ticked sub-types are added together.
+          Leave the fee empty to use the course fee. A changed fee applies to new admissions only.
+        </p>
+        {subtypes?.map((s) => editing?.id === s.id ? (
+          <div className="subtype-edit" key={s.id}>
+            <div className="form-grid">
+              <Field label="Name" required htmlFor={`st-n-${s.id}`}><input id={`st-n-${s.id}`} className="input" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></Field>
+              <Field label="Sub-type fee (₹)" hint="Empty = course fee" htmlFor={`st-f-${s.id}`}><MoneyInput id={`st-f-${s.id}`} value={editing.fee} onChange={(v) => setEditing({ ...editing, fee: v })} /></Field>
+            </div>
+            <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+              <button className="btn btn-primary btn-sm" disabled={!editing.name.trim()} onClick={save}>Save</button>
+            </div>
+          </div>
+        ) : (
           <div className="row-between" key={s.id}>
-            <span>{s.name} {!s.is_active && <span className="muted">(inactive)</span>}</span>
-            <button className="btn btn-ghost btn-sm" onClick={() => write(api(`/course-subtypes/${s.id}/${s.is_active ? 'deactivate' : 'activate'}`, { method: 'POST' })).catch((e) => toast('error', errText(e)))}>
-              {s.is_active ? 'Deactivate' : 'Activate'}
-            </button>
+            <span>
+              {s.name} {!s.is_active && <span className="muted">(inactive)</span>}
+              <span className="muted num" style={{ marginLeft: 8, fontSize: 13 }}>{s.fee !== null ? money(s.fee) : 'course fee'}</span>
+            </span>
+            <span className="row" style={{ gap: 4 }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setEditing({ id: s.id, name: s.name, fee: s.fee !== null ? n(s.fee) : '' })}><Pencil /> Edit</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => write(api(`/course-subtypes/${s.id}/${s.is_active ? 'deactivate' : 'activate'}`, { method: 'POST' })).catch((e) => toast('error', errText(e)))}>
+                {s.is_active ? 'Deactivate' : 'Activate'}
+              </button>
+            </span>
           </div>
         ))}
-        <Field label="New sub-type" htmlFor="sub-name"><input id="sub-name" className="input" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} /></Field>
+        <div className="form-grid">
+          <Field label="New sub-type" htmlFor="sub-name"><input id="sub-name" className="input" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} /></Field>
+          <Field label="Sub-type fee (₹)" hint="Optional" htmlFor="sub-fee"><MoneyInput id="sub-fee" value={fee} onChange={setFee} /></Field>
+        </div>
         <button className="btn btn-primary" onClick={add} disabled={!name.trim()}><Plus /> Add sub-type</button>
       </div>
     </Drawer>
   );
 }
 
-function SlotDrawer({ open, onClose, courses }: { open: boolean; onClose: () => void; courses: Course[] }) {
+// Add or edit a time slot. 19 Nov: a slot can be for one sub-type of its course; "Whole course" fits every student.
+function SlotDrawer({ slot: target, onClose, courses }: { slot: TimeSlot | 'new' | null; onClose: () => void; courses: Course[] }) {
   const { toast } = useApp();
-  const blank = { name: '', course_id: '', start_time: '08:00', end_time: '09:00', days: 'Mon – Sat', faculty: '', capacity: 30 };
+  const editing = target && target !== 'new' ? target : null;
+  const blank = { name: '', course_id: '', course_subtype_id: '', start_time: '08:00', end_time: '09:00', days: 'Mon – Sat', faculty: '', capacity: 30 };
   const [slot, setSlot] = useState(blank);
   const [busy, setBusy] = useState(false);
-  useEffect(() => setSlot(blank), [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [errs, setErrs] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setErrs({});
+    setSlot(editing ? { name: editing.name, course_id: String(editing.course_id), course_subtype_id: editing.course_subtype ? String(editing.course_subtype.id) : '',
+      start_time: editing.start_time, end_time: editing.end_time, days: editing.days, faculty: editing.faculty ?? '', capacity: editing.capacity } : blank);
+  }, [target]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { data: subtypes } = useQuery<Subtype[]>(target && slot.course_id ? `/courses/${slot.course_id}/subtypes` : null);
+  const offered = (subtypes ?? []).filter((s) => s.is_active || String(s.id) === slot.course_subtype_id);
+  const allCourses = editing && !courses.some((c) => c.id === editing.course_id) && editing.course ? [...courses, { ...editing.course } as Course] : courses;
   const valid = !!(slot.course_id && slot.name.trim() && validInstituteSlot(slot.start_time, slot.end_time) && slot.capacity > 0);
   const save = async () => {
     setBusy(true);
     try {
-      await write(api('/time-slots', { method: 'POST', body: { ...slot, course_id: Number(slot.course_id) } }));
-      toast('success', 'Time slot added', slot.name);
+      const body = { name: slot.name, start_time: slot.start_time, end_time: slot.end_time, days: slot.days, faculty: slot.faculty, capacity: slot.capacity,
+        course_subtype_id: slot.course_subtype_id ? Number(slot.course_subtype_id) : null };
+      if (editing) await write(api(`/time-slots/${editing.id}`, { method: 'PATCH', body }));
+      else await write(api('/time-slots', { method: 'POST', body: { ...body, course_id: Number(slot.course_id) } }));
+      toast('success', editing ? 'Time slot saved' : 'Time slot added', slot.name);
       onClose();
     } catch (e) {
+      setErrs((e as { fields?: Record<string, string> }).fields ?? {});
       toast('error', errText(e));
     } finally {
       setBusy(false);
     }
   };
   return (
-    <Drawer open={open} onClose={onClose} title="Add time slot" sub="Institute hours: 8:00 AM to 9:00 PM" foot={<><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={!valid || busy} onClick={save}>{busy && <span className="spinner" />}Save time slot</button></>}>
-      <div className="form-grid"><Field label="Slot name" required htmlFor="slot-name"><input id="slot-name" className="input" value={slot.name} onChange={(e) => setSlot({ ...slot, name: e.target.value })} /></Field><Field label="Course" required htmlFor="slot-course"><select id="slot-course" className="select" value={slot.course_id} onChange={(e) => setSlot({ ...slot, course_id: e.target.value })}><option value="">Select course</option>{courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field><Field label="Start" required htmlFor="slot-start"><input id="slot-start" className="input" type="time" min="08:00" max="21:00" value={slot.start_time} onChange={(e) => setSlot({ ...slot, start_time: e.target.value })} /></Field><Field label="End" required htmlFor="slot-end" error={slot.start_time && slot.end_time && !validInstituteSlot(slot.start_time, slot.end_time) ? 'Between 8:00 AM and 9:00 PM, after the start' : undefined}><input id="slot-end" className="input" type="time" min="08:00" max="21:00" value={slot.end_time} onChange={(e) => setSlot({ ...slot, end_time: e.target.value })} /></Field><Field label="Days" htmlFor="slot-days"><input id="slot-days" className="input" value={slot.days} onChange={(e) => setSlot({ ...slot, days: e.target.value })} /></Field><Field label="Faculty" htmlFor="slot-teacher"><input id="slot-teacher" className="input" value={slot.faculty} onChange={(e) => setSlot({ ...slot, faculty: e.target.value })} /></Field><Field label="Capacity" required htmlFor="slot-capacity"><input id="slot-capacity" className="input" type="number" min="1" value={slot.capacity} onChange={(e) => setSlot({ ...slot, capacity: Number(e.target.value) })} /></Field></div>
+    <Drawer open={!!target} onClose={onClose} title={editing ? 'Edit time slot' : 'Add time slot'} sub="Institute hours: 8:00 AM to 9:00 PM" foot={<><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={!valid || busy} onClick={save}>{busy && <span className="spinner" />}Save time slot</button></>}>
+      <div className="form-grid">
+        <Field label="Slot name" required htmlFor="slot-name"><input id="slot-name" className="input" value={slot.name} onChange={(e) => setSlot({ ...slot, name: e.target.value })} /></Field>
+        <Field label="Course" required htmlFor="slot-course" hint={editing ? 'A slot stays with its course' : undefined}>
+          <select id="slot-course" className="select" value={slot.course_id} disabled={!!editing} onChange={(e) => setSlot({ ...slot, course_id: e.target.value, course_subtype_id: '' })}>
+            <option value="">Select course</option>{allCourses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Course sub-type" htmlFor="slot-subtype" error={errs.course_subtype_id} hint={slot.course_id && !offered.length ? 'This course has no sub-types' : 'Whole course = students of any sub-type'}>
+          <select id="slot-subtype" className="select" value={slot.course_subtype_id} disabled={!slot.course_id || !offered.length} onChange={(e) => setSlot({ ...slot, course_subtype_id: e.target.value })}>
+            <option value="">Whole course</option>{offered.map((s) => <option key={s.id} value={s.id}>{s.name}{s.is_active ? '' : ' (inactive)'}</option>)}
+          </select>
+        </Field>
+        <Field label="Faculty" htmlFor="slot-teacher"><input id="slot-teacher" className="input" value={slot.faculty} onChange={(e) => setSlot({ ...slot, faculty: e.target.value })} /></Field>
+        <Field label="Start" required htmlFor="slot-start"><input id="slot-start" className="input" type="time" min="08:00" max="21:00" value={slot.start_time} onChange={(e) => setSlot({ ...slot, start_time: e.target.value })} /></Field>
+        <Field label="End" required htmlFor="slot-end" error={slot.start_time && slot.end_time && !validInstituteSlot(slot.start_time, slot.end_time) ? 'Between 8:00 AM and 9:00 PM, after the start' : undefined}><input id="slot-end" className="input" type="time" min="08:00" max="21:00" value={slot.end_time} onChange={(e) => setSlot({ ...slot, end_time: e.target.value })} /></Field>
+        <Field label="Days" htmlFor="slot-days"><input id="slot-days" className="input" value={slot.days} onChange={(e) => setSlot({ ...slot, days: e.target.value })} /></Field>
+        <Field label="Capacity" required htmlFor="slot-capacity"><input id="slot-capacity" className="input" type="number" min="1" value={slot.capacity} onChange={(e) => setSlot({ ...slot, capacity: Number(e.target.value) })} /></Field>
+      </div>
     </Drawer>
   );
 }

@@ -325,7 +325,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
       </div>
 
       {bill && customer && (
-        <WhatsAppSend open={wa} onClose={() => setWa(false)} title={`Send bill ${bill.code}`} name={customer.name} phone={bill.customer.whatsapp_number} message={billMessage(bill)} pdf={() => billPdf(print)}
+        <WhatsAppSend open={wa} onClose={() => setWa(false)} title={`Send bill ${bill.code}`} name={customer.name} phone={bill.customer.whatsapp_number || bill.customer.mobile} recordLabel="customer’s profile" message={billMessage(bill)} pdf={() => billPdf(print)}
           onOpened={() => { api(`/service-bills/${bill.code}/share-events`, { method: 'POST', body: { event_type: 'WHATSAPP_OPENED' } }).catch(() => {}); toast('success', 'WhatsApp opened', `Bill ready to send to ${customer.name}`); }} />
       )}
 

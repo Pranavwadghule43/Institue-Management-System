@@ -187,6 +187,8 @@ class CourseSubtype(Base):
     id: Mapped[int] = pk()
     course_id: Mapped[int] = fk("courses.id", nullable=False)
     name: Mapped[str] = mapped_column(String(150))
+    # 19 Nov: optional own fee. When a student's ticked sub-types have fees, their sum replaces the course fee at admission.
+    fee: Mapped[Decimal | None] = mapped_column(MONEY, CheckConstraint("fee >= 0", name="course_subtypes_fee_check"))
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     created_at: Mapped[datetime] = created()
 
@@ -199,6 +201,7 @@ class TimeSlot(Base):
     )
     id: Mapped[int] = pk()
     course_id: Mapped[int] = fk("courses.id", nullable=False)
+    course_subtype_id: Mapped[int | None] = fk("course_subtypes.id")  # 19 Nov: optional; must belong to course_id
     name: Mapped[str] = mapped_column(String(120))
     start_time: Mapped[time] = mapped_column(Time)
     end_time: Mapped[time] = mapped_column(Time)
@@ -211,6 +214,7 @@ class TimeSlot(Base):
     created_at: Mapped[datetime] = created()
 
     course: Mapped[Course] = relationship()
+    subtype: Mapped[CourseSubtype | None] = relationship()
 
 
 class Enquiry(Base):

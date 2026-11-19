@@ -4,7 +4,7 @@ from datetime import date, time
 from fastapi import APIRouter, Depends
 from pydantic import Field, model_validator
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from ..common import In, Money, OptText, Str, apply_changes, audit, like, money, now, today
 from ..db import get_db
@@ -49,7 +49,7 @@ def course_out(c: Course) -> dict:
 
 
 def slot_out(s: TimeSlot, assigned: int | None = None) -> dict:
-    out = {"id": s.id, "course_id": s.course_id, "name": s.name, "start_time": s.start_time.strftime("%H:%M"),
+    out = {"id": s.id, "course_id": s.course_id, "course_subtype": {"id": s.subtype.id, "name": s.subtype.name} if s.subtype else None, "name": s.name, "start_time": s.start_time.strftime("%H:%M"),
            "end_time": s.end_time.strftime("%H:%M"), "timing": f"{fmt_time(s.start_time)} – {fmt_time(s.end_time)}",
            "days": s.days_of_week, "faculty": s.faculty_name, "capacity": s.capacity, "start_date": s.start_date,
            "end_date": s.end_date, "is_active": s.is_active, "status": slot_status(s, today())}
@@ -100,7 +100,7 @@ def list_courses(active: bool | None = None, q: str | None = None, db: Session =
     for s in db.scalars(select(TimeSlot).where(TimeSlot.is_active.is_(True))):
         slots[s.course_id] = slots.get(s.course_id, 0) + (slot_status(s, t) != "Completed")
     for st in db.scalars(select(CourseSubtype).where(CourseSubtype.is_active.is_(True)).order_by(CourseSubtype.name)):
-        subtypes.setdefault(st.course_id, []).append({"id": st.id, "name": st.name})
+        subtypes.setdefault(st.course_id, []).append({"id": st.id, "name": st.name, "fee": money(st.fee) if st.fee is not None else None})
     return [course_out(c) | {"active_students": students.get(c.id, 0), "time_slots": slots.get(c.id, 0), "subtypes": subtypes.get(c.id, [])} for c in courses]
 
 
@@ -166,6 +166,12 @@ def delete_course(course_id: int, db: Session = Depends(get_db), user: CurrentUs
 
 class SubtypeIn(In):
     name: Str(150)
+    fee: Money | None = None  # 19 Nov: optional own fee (empty = no fee of its own; the course fee applies)
+
+
+class SubtypePatch(In):
+    name: Str(150) | None = None
+    fee: Money | None = None  # send null to clear
 
 
 def _subtype(db: Session, subtype_id: int) -> CourseSubtype:
@@ -185,7 +191,7 @@ def _check_subtype_name(db: Session, course_id: int, name: str, exclude_id: int 
 
 
 def subtype_out(s: CourseSubtype) -> dict:
-    return {"id": s.id, "course_id": s.course_id, "name": s.name, "is_active": s.is_active}
+    return {"id": s.id, "course_id": s.course_id, "name": s.name, "fee": money(s.fee) if s.fee is not None else None, "is_active": s.is_active}
 
 
 @router.get("/courses/{course_id}/subtypes")
@@ -200,20 +206,25 @@ def list_subtypes(course_id: int, active: bool | None = None, db: Session = Depe
 def create_subtype(course_id: int, body: SubtypeIn, db: Session = Depends(get_db), user: CurrentUser = Depends(manage)):
     c = get_course(db, course_id)
     _check_subtype_name(db, c.id, body.name)
-    s = CourseSubtype(course_id=c.id, name=body.name, is_active=True)
+    s = CourseSubtype(course_id=c.id, name=body.name, fee=body.fee, is_active=True)
     db.add(s)
-    audit(db, user.id, "COURSE_SUBTYPE_CREATED", "Course", c.code, f"Sub-type {body.name} added to {c.code}")
+    audit(db, user.id, "COURSE_SUBTYPE_CREATED", "Course", c.code, f"Sub-type {body.name} added to {c.code}" + (f" (fee {money(body.fee)})" if body.fee is not None else ""))
     db.commit()
     return subtype_out(s)
 
 
 @router.patch("/course-subtypes/{subtype_id}")
-def rename_subtype(subtype_id: int, body: SubtypeIn, db: Session = Depends(get_db), user: CurrentUser = Depends(manage)):
+def rename_subtype(subtype_id: int, body: SubtypePatch, db: Session = Depends(get_db), user: CurrentUser = Depends(manage)):
+    """Rename and/or set the fee. A new fee applies to future admissions only: enrolled students keep the fee they agreed."""
     s = _subtype(db, subtype_id)
-    _check_subtype_name(db, s.course_id, body.name, s.id)
-    before, after = apply_changes(s, {"name": body.name})
+    data = body.model_dump(exclude_unset=True)
+    if data.get("name") is None:
+        data.pop("name", None)
+    else:
+        _check_subtype_name(db, s.course_id, data["name"], s.id)
+    before, after = apply_changes(s, data)
     if after:
-        audit(db, user.id, "COURSE_SUBTYPE_UPDATED", "Course Subtype", str(s.id), f"Sub-type renamed to {s.name}", before, after)
+        audit(db, user.id, "COURSE_SUBTYPE_UPDATED", "Course Subtype", str(s.id), f"Sub-type {s.name} updated", before, after)
     db.commit()
     return subtype_out(s)
 
@@ -237,6 +248,7 @@ def deactivate_subtype(subtype_id: int, db: Session = Depends(get_db), user: Cur
 
 class SlotIn(In):
     course_id: int
+    course_subtype_id: int | None = None  # 19 Nov: a slot can be for one sub-type of the course; empty = the whole course
     name: Str(120)
     start_time: time
     end_time: time
@@ -256,6 +268,7 @@ class SlotIn(In):
 
 
 class SlotPatch(In):
+    course_subtype_id: int | None = None  # send null to make it a whole-course slot again
     name: Str(120) | None = None
     start_time: time | None = None
     end_time: time | None = None
@@ -273,6 +286,15 @@ def _slot(db: Session, slot_id: int) -> TimeSlot:
     return s
 
 
+def _check_slot_subtype(db: Session, course_id: int, subtype_id: int | None, current: int | None = None) -> None:
+    """The sub-type must belong to the slot's course (and be active, unless the slot already had it)."""
+    if subtype_id is None:
+        return
+    st = db.get(CourseSubtype, subtype_id)
+    if st is None or st.course_id != course_id or (not st.is_active and st.id != current):
+        raise AppError(400, "SUBTYPE_MISMATCH", "Choose a sub-type of this course.", {"course_subtype_id": "Choose a sub-type of this course."})
+
+
 def _slot_columns(data: dict) -> dict:
     if "days" in data:
         data["days_of_week"] = data.pop("days")
@@ -284,7 +306,7 @@ def _slot_columns(data: dict) -> dict:
 @router.get("/time-slots")
 def list_slots(course_id: int | None = None, active: bool | None = None, include_completed: bool = True,
                db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)):
-    stmt = select(TimeSlot).order_by(TimeSlot.start_time, TimeSlot.name)
+    stmt = select(TimeSlot).options(selectinload(TimeSlot.course), selectinload(TimeSlot.subtype)).order_by(TimeSlot.start_time, TimeSlot.name)
     if course_id:
         stmt = stmt.where(TimeSlot.course_id == course_id)
     if active is not None:
@@ -300,6 +322,7 @@ def create_slot(body: SlotIn, db: Session = Depends(get_db), user: CurrentUser =
     c = get_course(db, body.course_id)
     if not c.is_active:
         raise AppError(400, "COURSE_INACTIVE", "Choose an active course.", {"course_id": "Choose an active course."})
+    _check_slot_subtype(db, c.id, body.course_subtype_id)
     s = TimeSlot(**_slot_columns(body.model_dump()), is_active=True)
     db.add(s)
     db.flush()
@@ -322,6 +345,8 @@ def update_slot(slot_id: int, body: SlotPatch, db: Session = Depends(get_db), us
            end_time=data.get("end_time", s.end_time), days=data.get("days_of_week", s.days_of_week),
            faculty=data.get("faculty_name", s.faculty_name), capacity=data.get("capacity", s.capacity),
            start_date=data.get("start_date", s.start_date), end_date=data.get("end_date", s.end_date))
+    if "course_subtype_id" in data:
+        _check_slot_subtype(db, s.course_id, data["course_subtype_id"], s.course_subtype_id)
     before, after = apply_changes(s, data)
     if after:
         audit(db, user.id, "TIME_SLOT_UPDATED", "Time Slot", str(s.id), f"Time slot {s.name} updated", before, after)

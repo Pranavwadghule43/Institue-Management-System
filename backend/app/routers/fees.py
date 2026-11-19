@@ -106,7 +106,7 @@ def student_fee_summary(code: str, db: Session = Depends(get_db), _: CurrentUser
     s = db.scalars(select(Student).where(Student.student_code == code, Student.deleted_at.is_(None))).first()
     if s is None:
         raise not_found("student")
-    return {"student": {"code": s.student_code, "name": s.full_name, "mobile": s.mobile, "status": s.status,
+    return {"student": {"code": s.student_code, "name": s.full_name, "mobile": s.mobile, "whatsapp_number": s.whatsapp_number or s.mobile, "status": s.status,
                         "course": {"code": s.course.code, "name": s.course.name}, "time_slot": s.time_slot.name}} | fee_summary(db, s, today())
 
 
@@ -130,7 +130,7 @@ def collect_fee(code: str, body: PaymentIn, idempotency_key: str | None = Header
             return {"payment": payment_out(prior, _receipt_code(db, prior.id), s, user_names(db, [prior.collected_by])), "replayed": True}
     p, r = record_payment(db, s, body.amount, body.payment_mode, body.reference, body.remarks, user, idempotency_key)
     db.commit()
-    return {"payment": payment_out(p, r.receipt_code, s, {user.id: user.full_name}), "receipt": receipt_out(r, p), "replayed": False}
+    return {"payment": payment_out(p, r.receipt_code, s, {user.id: user.full_name}), "receipt": receipt_out(r, p, s), "replayed": False}
 
 
 def _payments_query(q, mode, status, student_code, date_from, date_to):
@@ -198,10 +198,16 @@ def reverse_payment(payment_id: int, body: ReverseIn, db: Session = Depends(get_
 # ----------------------------------------------------------------- receipts
 
 
-def receipt_out(r: FeeReceipt, p: P) -> dict:
-    """The issued snapshot is returned as-is; only the reversal status is live."""
+def send_to(s: Student | None) -> dict | None:
+    """19 Nov: who a receipt is sent to on WhatsApp - the student's registered WhatsApp number now (same rule as the fee
+    reminder), not the mobile frozen in the receipt snapshot."""
+    return {"name": s.full_name, "whatsapp_number": s.whatsapp_number or s.mobile} if s else None
+
+
+def receipt_out(r: FeeReceipt, p: P, s: Student | None = None) -> dict:
+    """The issued snapshot is returned as-is; only the reversal status (and the WhatsApp number to send to) is live."""
     return {"receipt_no": r.receipt_code, "payment_id": p.id, "issued_at": r.issued_at, "status": p.status, "reversed_at": p.reversed_at,
-            "reversal_reason": p.reversal_reason, "next_payment_date": r.next_payment_date_snapshot, "snapshot": r.snapshot}
+            "reversal_reason": p.reversal_reason, "next_payment_date": r.next_payment_date_snapshot, "snapshot": r.snapshot, "send_to": send_to(s)}
 
 
 def _receipt(db: Session, code: str) -> tuple[FeeReceipt, P]:
@@ -224,7 +230,8 @@ def list_receipts(q: str | None = None, mode: PayMode | None = None, include_rev
 @router.get("/receipts/{code}")
 @router.get("/receipts/{code}/print-data")
 def get_receipt(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(require("receipts.view_print"))):
-    return receipt_out(*_receipt(db, code))
+    r, p = _receipt(db, code)
+    return receipt_out(r, p, db.get(Student, p.student_id))
 
 
 class ShareIn(In):
