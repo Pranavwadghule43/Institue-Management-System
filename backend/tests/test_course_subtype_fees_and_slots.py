@@ -75,13 +75,13 @@ def test_admission_and_student_changes_enforce_slot_eligibility_and_keep_pricing
     for ids in ([], [a]):
         response = admin.post(conversion, json=admission_body(course, course_subtype_ids=ids, time_slot_id=assigned))
         assert_error(response, 400, "TIME_SLOT_SUBTYPE_MISMATCH")
-    custom = [{"due_date": (today() + timedelta(days=30)).isoformat(), "amount": "6750"}]
+    custom = [{"due_date": (today() + timedelta(days=30)).isoformat(), "amount": "7250.15"}]
     result = ok(admin.post(conversion, json=admission_body(
         course, course_subtype_ids=[a, b], time_slot_id=assigned, discount="250", installments=custom,
     )), 201)
     code = result["student"]["code"]
-    assert result["fees"]["agreed_fee"] == "7500.00"
-    assert result["fees"]["net_fee"] == "7250.00" and result["fees"]["balance"] == "6750.00"
+    assert result["fees"]["agreed_fee"] == "8000.15"
+    assert result["fees"]["net_fee"] == "7750.15" and result["fees"]["balance"] == "7250.15"
     receipt = result["receipt"]
     receipt_path = f"/receipts/{receipt['receipt_no']}"
 

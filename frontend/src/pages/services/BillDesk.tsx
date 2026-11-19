@@ -10,7 +10,7 @@ import { money, n } from '../../lib/format';
 import { PAY_LABEL } from '../../lib/payModes';
 import { billMessage } from '../../lib/whatsapp';
 import { WhatsAppSend } from '../../components/WhatsAppSend';
-import { PrintArea, ServiceBillPrint, billPdf } from '../../components/PrintDocs';
+import { PrintArea, ServiceBillPrint, billPdf, type BillPrintData } from '../../components/PrintDocs';
 import { saveFile } from '../../lib/pdf';
 import NotFound from '../NotFound';
 
@@ -59,7 +59,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
   const [reason, setReason] = useState('');
   const [confirmNo, setConfirmNo] = useState('');
   const [busy, setBusy] = useState(false);
-  const [wa, setWa] = useState(!!autoSend && bill?.status === 'Paid');
+  const [shareBill, setShareBill] = useState<Bill | null>(autoSend && bill?.status === 'Paid' ? bill : null);
   const [pdfBusy, setPdfBusy] = useState(false);
   const payKey = useRef(newKey());
 
@@ -145,7 +145,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
       toast('success', 'Payment received', `${paid.code} · ${money(paid.grand_total)} · ${PAY_LABEL[mode]}`);
       setPayOpen(false);
       if (!bill) nav(`/services/bills/${paid.code}?send=1`, { replace: true });
-      else setWa(true);
+      else setShareBill(paid);
     } catch (e) {
       toast('error', errText(e));
     } finally {
@@ -163,6 +163,16 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
     paidNote: bill?.payment && bill.paid_at ? `Paid in full by ${bill.payment.mode_label}.` : undefined,
   }), [bill, customer, work, portal, lines, sub, disc, total, inst]);
 
+  const sharePrint: BillPrintData | null = shareBill ? {
+    ...print,
+    billNo: shareBill.code, date: shareBill.created_at, customerName: shareBill.customer.name, mobile: shareBill.customer.mobile,
+    work: shareBill.job.application_name || shareBill.items.map((item) => item.name).join(', '),
+    items: shareBill.items.map((item) => ({ name: item.name, qty: item.quantity, rate: item.rate, amount: item.line_amount })),
+    subtotal: shareBill.subtotal, discount: shareBill.discount, total: shareBill.grand_total, inst: shareBill.institute,
+    status: shareBill.status === 'Paid' ? 'paid' : null,
+    paidNote: shareBill.payment ? `Paid in full by ${shareBill.payment.mode_label}.` : undefined,
+  } : null;
+
   return (
     <>
       <PageHeader
@@ -172,7 +182,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
         actions={
           <>
             {bill && bill.status !== 'Cancelled' && can('service_bill.cancel') && <button className="btn btn-danger-soft" onClick={() => { setReason(''); setConfirmNo(''); setCancelOpen(true); }}><Ban /> Cancel bill</button>}
-            {bill && bill.status !== 'Cancelled' && <button className="btn btn-whatsapp" onClick={() => setWa(true)}><MessageCircle /> Send bill on WhatsApp</button>}
+            {bill && bill.status !== 'Cancelled' && <button className="btn btn-whatsapp" onClick={() => setShareBill(bill)}><MessageCircle /> Send bill on WhatsApp</button>}
             <button className="btn btn-secondary" disabled={!lines.length || pdfBusy} onClick={async () => { setPdfBusy(true); try { saveFile(await billPdf(print)); } catch (e) { toast('error', 'PDF could not be created', errText(e)); } finally { setPdfBusy(false); } }}>
               {pdfBusy ? <span className="spinner" /> : <FileDown />} Download PDF
             </button>
@@ -324,9 +334,11 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
         </section>
       </div>
 
-      {bill && customer && (
-        <WhatsAppSend open={wa} onClose={() => setWa(false)} title={`Send bill ${bill.code}`} name={customer.name} phone={bill.customer.whatsapp_number} message={billMessage(bill)} pdf={() => billPdf(print)}
-          onOpened={() => { api(`/service-bills/${bill.code}/share-events`, { method: 'POST', body: { event_type: 'WHATSAPP_OPENED' } }).catch(() => {}); toast('success', 'WhatsApp opened', `Bill ready to send to ${customer.name}`); }} />
+      {shareBill && sharePrint && (
+        <WhatsAppSend open onClose={() => setShareBill(null)} title={`Send bill ${shareBill.code}`} name={shareBill.customer.name}
+          phone={shareBill.customer.whatsapp_number || shareBill.customer.mobile} recordLabel="customer’s profile"
+          message={billMessage(shareBill)} pdf={() => billPdf(sharePrint)}
+          onOpened={() => api(`/service-bills/${shareBill.code}/share-events`, { method: 'POST', body: { event_type: 'WHATSAPP_OPENED' } }).catch(() => {})} />
       )}
 
       <Confirm open={payOpen} onClose={() => setPayOpen(false)} icon={<Check />} title={`Receive ${money(total)} from ${customer?.name}?`} body={`Full payment by ${PAY_LABEL[mode]}. The bill is locked once paid.`} confirmLabel="Confirm payment" busy={busy} onConfirm={pay}>

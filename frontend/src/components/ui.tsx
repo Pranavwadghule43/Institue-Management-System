@@ -324,18 +324,29 @@ export function Field({ label, required, error, hint, children, className = '', 
 }
 
 /** ₹ amount input — digits only, Indian grouping as you type */
-export function MoneyInput({ value, onChange, id, xl, placeholder = '0' }: { value: number | ''; onChange: (v: number | '') => void; id?: string; xl?: boolean; placeholder?: string }) {
-  const shown = value === '' ? '' : new Intl.NumberFormat('en-IN').format(value);
+export function MoneyInput({ value, onChange, id, xl, placeholder = '0', allowPaise = false }: {
+  value: number | ''; onChange: (v: number | '') => void; id?: string; xl?: boolean; placeholder?: string; allowPaise?: boolean;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? (value === '' ? '' : new Intl.NumberFormat('en-IN').format(value));
   return (
     <div className="input-group">
       <span className="input-prefix">₹</span>
       <input
         id={id}
         className={`input num ${xl ? 'input-xl' : ''}`}
-        inputMode="numeric"
+        inputMode={allowPaise ? 'decimal' : 'numeric'}
         value={shown}
         placeholder={placeholder}
+        onBlur={allowPaise ? () => setDraft(null) : undefined}
         onChange={(e) => {
+          if (allowPaise) {
+            const raw = e.target.value.replace(/,/g, '');
+            if (!/^\d{0,10}(?:\.\d{0,2})?$/.test(raw)) return;
+            setDraft(raw);
+            onChange(raw === '' || raw === '.' ? '' : Number(raw));
+            return;
+          }
           const raw = e.target.value.replace(/[^\d]/g, '').slice(0, 9);
           onChange(raw === '' ? '' : parseInt(raw, 10));
         }}

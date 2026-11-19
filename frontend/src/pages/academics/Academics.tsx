@@ -69,7 +69,7 @@ export function Courses() {
                       </div>
                     </td>
                     <td style={{ whiteSpace: 'normal' }}>
-                      {c.subtypes?.map((s) => <span className="tag" key={s.id} style={{ marginRight: 4 }}>{s.name}</span>)}
+                      {c.subtypes?.map((s) => <span className="tag" key={s.id} style={{ marginRight: 4 }}>{s.name}{s.fee !== null && <span className="muted"> · {money(s.fee)}</span>}</span>)}
                       <button className="btn btn-ghost btn-sm" onClick={() => setSubCourse(c)}><Plus /> Manage</button>
                     </td>
                     <td>{c.duration_months ? `${c.duration_months} months` : '—'}</td>

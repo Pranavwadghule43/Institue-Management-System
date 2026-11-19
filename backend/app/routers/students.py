@@ -18,7 +18,7 @@ from ..db import get_db
 from ..errors import AppError, bad, conflict, not_found
 from ..ledger import INSTALLMENT_NO_OFFSET, fee_cols, fee_summary, pct, reallocate
 from ..models import (
-    CourseSubtype, Enquiry, EnquiryActivity, FeeReceipt, FeeReminderEvent, AuditLog, Student, StudentInstallment, StudentPayment,
+    Course, CourseSubtype, Enquiry, EnquiryActivity, FeeReceipt, FeeReminderEvent, AuditLog, Student, StudentInstallment, StudentPayment,
     StudentPaymentAllocation,
     StudentTimeSlotHistory, TimeSlot,
 )
@@ -140,6 +140,11 @@ def valid_slot(db: Session, slot_id: int, course_id: int, subtype_ids: list[int]
     return slot
 
 
+def admission_fee(course: Course, chosen: list[CourseSubtype]) -> Decimal:
+    priced = {st.id: st.fee for st in chosen if st.fee is not None}
+    return sum(priced.values(), ZERO) if priced else course.fee
+
+
 def capacity_warning(db: Session, slot: TimeSlot) -> bool:
     # Capacity is advisory (UI allows over-capacity admission); never a hard block.
     n = db.scalar(select(func.count()).where(Student.time_slot_id == slot.id, Student.status == "Active", Student.deleted_at.is_(None)))
@@ -159,7 +164,7 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
             receipt = db.scalars(select(FeeReceipt).where(FeeReceipt.payment_id == prior.id)).first()
             return {"student": student_out(s), "fees": fee_summary(db, s, today()), "capacity_warning": False,
                     "payment": payment_out(prior, receipt.receipt_code if receipt else None, s, user_names(db, [prior.collected_by])),
-                    "receipt": receipt_out(receipt, prior) if receipt else None, "replayed": True}
+                    "receipt": receipt_out(receipt, prior, s) if receipt else None, "replayed": True}
     if e.status == "Converted" or db.scalar(select(Student.id).where(Student.enquiry_id == e.id)):
         raise conflict("ENQUIRY_ALREADY_CONVERTED", "This enquiry is already converted to a student.")
     if e.course_id and e.course_id != body.course_id:
@@ -167,9 +172,11 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
     chosen = check_subtypes(db, body.course_id, wanted_subtypes(body.course_subtype_ids, body.course_subtype_id))
     course = get_course(db, body.course_id)
     slot = valid_slot(db, body.time_slot_id, course.id, [st.id for st in chosen])
-    fee = course.fee
+    fee = admission_fee(course, chosen)
+    if fee > Decimal("9999999999.99"):
+        raise bad("ADMISSION_FEE_TOO_HIGH", "The combined subtype fees exceed the maximum admission fee.", "course_subtype_ids")
     if body.discount > fee:
-        raise bad("DISCOUNT_EXCEEDS_FEE", "Discount can't exceed the course fee.", "discount")
+        raise bad("DISCOUNT_EXCEEDS_FEE", "Discount can't exceed the admission fee.", "discount")
     net = fee - body.discount
     if body.paid_now > net:
         raise bad("PAID_EXCEEDS_NET_FEE", f"Can't exceed net fee of {money(net)}.", "paid_now")
@@ -221,7 +228,7 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
     db.commit()
     return {"student": student_out(s), "fees": fee_summary(db, s, today()), "capacity_warning": warn,
             "payment": payment_out(payment, receipt.receipt_code, s, {user.id: user.full_name}) if payment else None,
-            "receipt": receipt_out(receipt, payment) if receipt else None, "replayed": False}
+            "receipt": receipt_out(receipt, payment, s) if receipt else None, "replayed": False}
 
 
 class StudentCreateIn(AdmissionIn):

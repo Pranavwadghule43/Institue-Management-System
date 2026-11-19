@@ -9,7 +9,7 @@ import {
 } from '../../components/ui';
 import { api, useQuery, write } from '../../api/client';
 import type { FeeSummary, Payment, Ref, Student, TimeSlot } from '../../api/types';
-import { date, dateTime, iso, money, n, relDays, toDate } from '../../lib/format';
+import { date, dateTime, iso, money, n, relDays, toDate, toPaise } from '../../lib/format';
 import { feeReminderText, waLink } from '../../lib/whatsapp';
 import NotFound from '../NotFound';
 import { PlanEditor, planError, type PlanRow } from '../../components/PlanEditor';
@@ -403,7 +403,9 @@ function EditStudent({ open, s, onClose }: { open: boolean; s: Student; onClose:
 // 16 Nov (client): change the dates and amounts still to be paid. Money already received stays where it is.
 function EditPlan({ open, s, fees, onClose }: { open: boolean; s: Student; fees: FeeSummary; onClose: () => void }) {
   const { toast } = useApp();
-  const remaining = (): PlanRow[] => fees.schedule.filter((r) => r.no > 0 && n(r.paid) < n(r.amount)).map((r) => ({ due: r.due_date, amount: n(r.amount) - n(r.paid) }));
+  const remaining = (): PlanRow[] => fees.schedule.filter((r) => r.no > 0 && n(r.paid) < n(r.amount)).map((r) => ({
+    due: r.due_date, amount: (toPaise(r.amount) - toPaise(r.paid)) / 100,
+  }));
   const [rows, setRows] = useState<PlanRow[]>(remaining);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);

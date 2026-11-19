@@ -40,3 +40,37 @@ test('batch choices keep course-wide slots and match any selected subtype of the
   assert.deepEqual(eligibleTimeSlots(slots, 20, [4, 5]).map((slot) => slot.id), [4]);
   assert.equal(eligibleTimeSlots(undefined, 10, [4]), undefined);
 });
+
+// 19 Nov: bills and receipts open the chat for the registered number the same way the fee reminder does.
+const { waLink, waNumber } = loadSource('src/lib/whatsapp.ts');
+
+test('WhatsApp numbers follow the fee-reminder rules and open the exact chat', () => {
+  assert.deepEqual(waNumber('98765 43210'), { local: '9876543210', problem: null });
+  assert.deepEqual(waNumber('+91 98765 43210'), { local: '9876543210', problem: null });
+  assert.deepEqual(waNumber('09876543210'), { local: '9876543210', problem: null });
+  assert.equal(waNumber('').problem, 'missing');
+  assert.equal(waNumber(null).problem, 'missing');
+  assert.equal(waNumber('12345').problem, 'invalid');
+  assert.equal(waNumber('5876543210').problem, 'invalid');
+  assert.equal(waNumber('name 9876543210').problem, 'invalid');
+  assert.equal(waLink('9876543210', 'Bill SB-1'), 'https://wa.me/919876543210?text=Bill%20SB-1');
+});
+
+const { admissionPrice } = loadSource('src/lib/admissionPricing.ts');
+const { evenPlan, planError } = loadSource('src/components/PlanEditor.tsx');
+
+test('admission pricing counts each configured subtype once and falls back to the course', () => {
+  const first = { id: 1, fee: '4000.15' };
+  const second = { id: 2, fee: '6000.20' };
+  const blank = { id: 3, fee: null };
+  assert.deepEqual(admissionPrice('7500.00', [blank]), { usesSubtypeFees: false, feePaise: 750000 });
+  assert.deepEqual(admissionPrice('7500.00', [first, second, blank, first]), { usesSubtypeFees: true, feePaise: 1000035 });
+  assert.deepEqual(admissionPrice('7500.00', [{ id: 4, fee: '0.00' }, blank]), { usesSubtypeFees: true, feePaise: 0 });
+});
+
+test('installment splitting and comparisons retain paise', () => {
+  const rows = evenPlan(2, '2026-12-01', 7250.15);
+  assert.deepEqual(rows.map((row) => row.amount), [3600, 3650.15]);
+  assert.equal(planError(rows, 7250.15, '2026-11-19'), null);
+  assert.equal(planError([{ due: '2026-12-01', amount: 0.1 }, { due: '2026-12-02', amount: 0.2 }], 0.3, '2026-11-19'), null);
+});

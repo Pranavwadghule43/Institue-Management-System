@@ -1,8 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { FileDown, FileText, MessageCircle, Send, X } from 'lucide-react';
-import { useApp } from '../app/AppContext';
 import { Field, Modal } from './ui';
-import { waLink } from '../lib/whatsapp';
+import { waLink, waNumber } from '../lib/whatsapp';
 import { saveFile } from '../lib/pdf';
 
 /** Renders WhatsApp's *bold* / _italic_ markers the way the customer will see them */
@@ -27,61 +26,62 @@ function WaText({ text }: { text: string }) {
   );
 }
 
-const canShareFile = (f: File) => typeof navigator !== 'undefined' && !!navigator.canShare?.({ files: [f] });
-
-/* Send a receipt / bill on WhatsApp (FR-030 / C-56). No WhatsApp API is used: nothing is sent automatically.
-   - With the device share sheet (Android, iPhone, Windows with the WhatsApp app): the PDF is attached and the
-     message goes with it; the user picks the chat in WhatsApp and presses Send.
-   - Otherwise (e.g. WhatsApp Web): the PDF is downloaded and the customer's chat opens with the message typed in;
-     the user attaches the downloaded PDF (drag it into the chat) and presses Send. */
+// Open the recipient's chat and download the file. The user attaches the PDF and sends it in WhatsApp.
 export function WhatsAppSend({
-  open, onClose, title, name, phone, message, pdf, onOpened,
+  open, onClose, title, name, phone, message, pdf, onOpened, recordLabel = 'record',
 }: {
-  open: boolean; onClose: () => void; title: string; name: string; phone: string; message: string; pdf?: () => Promise<File>; onOpened?: (phone: string) => void;
+  open: boolean; onClose: () => void; title: string; name: string; phone: string | null | undefined; message: string; pdf?: () => Promise<File>;
+  onOpened?: (phone: string) => void; recordLabel?: string;
 }) {
-  const { toast } = useApp();
-  const [num, setNum] = useState(phone);
+  const [num, setNum] = useState(phone ?? '');
   const [text, setText] = useState(message);
   const [file, setFile] = useState<File | null>(null);
   const [pdfError, setPdfError] = useState('');
+  const [opened, setOpened] = useState<{ blocked: boolean } | null>(null);
   useEffect(() => {
     if (!open) return;
-    setNum(phone);
+    setNum(phone ?? '');
     setText(message);
     setFile(null);
     setPdfError('');
+    setOpened(null);
     if (!pdf) return;
     let live = true;
-    pdf().then((f) => live && setFile(f)).catch(() => live && setPdfError('The PDF could not be created. You can still send the message.'));
+    pdf().then((f) => live && setFile(f)).catch(() => live && setPdfError('The PDF could not be created. You can still send the message as text.'));
     return () => {
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
-  const digits = num.replace(/\D/g, '');
-  const local = digits.length === 12 && digits.startsWith('91') ? digits.slice(2) : digits;
-  const valid = /^[6-9]\d{9}$/.test(local);
-  const share = file && canShareFile(file);
+  const { local, problem } = waNumber(num);
+  const valid = !problem;
+  const registered = waNumber(phone).local;
+  const changed = valid && registered !== local;
+  const link = valid ? waLink(local, text) : undefined;
+  const shown = `+91 ${local.replace(/(\d{5})(\d{5})/, '$1 $2')}`;
+  const numError = problem === 'missing'
+    ? `No WhatsApp number is saved for ${name}. Type it here, or add it to the ${recordLabel}.`
+    : problem === 'invalid' ? 'Enter a 10-digit Indian mobile number starting with 6, 7, 8 or 9.' : undefined;
 
-  const done = () => {
+  const recordOpen = () => {
+    setOpened({ blocked: false });
     onOpened?.(local);
-    onClose();
   };
-  const sendWithPdf = async () => {
-    if (!file) return;
-    if (share) {
-      try {
-        await navigator.share({ files: [file], text, title });
-        done();
-      } catch (e) {
-        if ((e as DOMException).name !== 'AbortError') toast('error', 'Sharing failed', 'Use “Download PDF” and attach it in WhatsApp.');
-      }
+  const openChat = () => {
+    if (!link) return;
+    const chat = window.open('about:blank', '_blank');
+    if (!chat) {
+      setOpened({ blocked: true });
       return;
     }
+    chat.opener = null;
+    chat.location.replace(link);
+    recordOpen();
+  };
+  const sendWithPdf = () => {
+    if (!file || !valid) return;
     saveFile(file);
-    window.open(waLink(local, text), '_blank', 'noopener');
-    toast('info', 'PDF downloaded', `Attach ${file.name} in the WhatsApp chat, then press Send.`);
-    done();
+    openChat();
   };
 
   return (
@@ -92,22 +92,48 @@ export function WhatsAppSend({
             <h2 style={{ fontSize: 16 }}>{title}</h2>
             <button className="icon-btn sm" onClick={onClose} aria-label="Close"><X /></button>
           </div>
-          <Field label={`WhatsApp number of ${name}`} required htmlFor="wanum" error={!valid ? 'Enter a 10-digit Indian mobile number' : undefined}>
-            <div className="input-group">
-              <span className="input-prefix" style={{ fontSize: 13 }}>+91</span>
-              <input id="wanum" className="input num" style={{ paddingLeft: 44 }} value={num} onChange={(e) => setNum(e.target.value.replace(/[^\d ]/g, ''))} />
+          {opened ? (
+            <div className="wa-steps" role="status">
+              {opened.blocked ? (
+                <div className="callout warning">
+                  <MessageCircle />
+                  <span>The browser blocked the new tab. <a href={link} target="_blank" rel="noreferrer" onClick={recordOpen}><strong>Open {name}’s chat</strong></a> to continue.</span>
+                </div>
+              ) : null}
+              <ol className="wa-steps__list">
+                <li className={opened.blocked ? '' : 'is-done'}>
+                  <strong>{opened.blocked ? 'Open the chat' : 'Chat opened'}</strong> for {name} · {shown}. Check this number at the top of the WhatsApp chat.
+                </li>
+                {pdf && file && (
+                  <li className="is-done"><strong>PDF download started</strong> for <span className="mono">{file.name}</span></li>
+                )}
+                {pdf && file && (
+                  <li><strong>Attach it:</strong> in the chat click <strong>📎 / +</strong> → <strong>Document</strong> and choose <span className="mono">{file.name}</span> — or drag it from Downloads into the chat.</li>
+                )}
+                <li><strong>Press Send</strong> in WhatsApp. The message is already typed in.</li>
+              </ol>
             </div>
-          </Field>
-          <Field label="Message" htmlFor="watext" hint="You can edit before sending. *text* shows bold, _text_ italic.">
-            <textarea id="watext" className="textarea mono" rows={11} style={{ fontSize: 12.5 }} value={text} onChange={(e) => setText(e.target.value)} />
-          </Field>
-          {pdf && (
-            <div className="callout info" style={{ marginTop: 4 }}>
-              <FileText />
-              <span>
-                {file ? <><strong>{file.name}</strong> · {Math.max(1, Math.round(file.size / 1024))} KB — attached when you send.</> : pdfError || <><span className="spinner" /> Preparing the PDF…</>}
-              </span>
-            </div>
+          ) : (
+            <>
+              <Field label={`WhatsApp number of ${name}`} required htmlFor="wanum" error={numError}
+                hint={changed && registered ? `Changed from the registered number +91 ${registered}.` : undefined}>
+                <div className="input-group">
+                  <span className="input-prefix" style={{ fontSize: 13 }}>+91</span>
+                  <input id="wanum" type="tel" className="input num" style={{ paddingLeft: 44 }} value={num} onChange={(e) => setNum(e.target.value)} />
+                </div>
+              </Field>
+              <Field label="Message" htmlFor="watext" hint="You can edit before sending. *text* shows bold, _text_ italic.">
+                <textarea id="watext" className="textarea mono" rows={pdf ? 9 : 11} style={{ fontSize: 12.5 }} value={text} onChange={(e) => setText(e.target.value)} />
+              </Field>
+              {pdf && (
+                <div className={`callout ${pdfError ? 'warning' : 'info'}`} style={{ marginTop: 4 }}>
+                  <FileText />
+                  <span>
+                    {file ? <><strong>{file.name}</strong> · {Math.max(1, Math.round(file.size / 1024))} KB ready to download.</> : pdfError || <><span className="spinner" /> Preparing the PDF…</>}
+                  </span>
+                </div>
+              )}
+            </>
           )}
         </div>
         <div className="wa__phone" aria-label="Preview">
@@ -115,7 +141,7 @@ export function WhatsAppSend({
             <span className="wa__avatar">{name.slice(0, 1)}</span>
             <div>
               <strong>{name}</strong>
-              <small>+91 {local.replace(/(\d{5})(\d{5})/, '$1 $2')}</small>
+              <small>{valid ? shown : 'No valid number'}</small>
             </div>
           </div>
           <div className="wa__chat">
@@ -131,24 +157,33 @@ export function WhatsAppSend({
           </div>
         </div>
       </div>
-      <div className="modal__foot" style={{ justifyContent: 'space-between' }}>
-        <span className="muted" style={{ fontSize: 12.5, alignSelf: 'center', maxWidth: 360 }}>
-          {pdf
-            ? share ? 'Choose WhatsApp in the share window; the PDF and message go together. Press Send in WhatsApp.' : 'The PDF downloads and the chat opens with the message. Drag the PDF into the chat, then press Send.'
-            : 'WhatsApp opens with this message ready. Press Send in WhatsApp.'}
-        </span>
-        <div className="row" style={{ gap: 8 }}>
-          {file && <button className="btn btn-secondary" onClick={() => saveFile(file)}><FileDown /> Download PDF</button>}
-          <a className={`btn ${pdf ? 'btn-secondary' : 'btn-whatsapp'} ${valid ? '' : 'is-disabled'}`} href={valid ? waLink(local, text) : undefined} target="_blank" rel="noreferrer"
-            aria-disabled={!valid} onClick={(e) => { if (!valid) return e.preventDefault(); done(); }}>
-            <MessageCircle /> {pdf ? 'Text only' : 'Open WhatsApp'}
-          </a>
-          {pdf && (
-            <button className="btn btn-whatsapp" disabled={!file || (!share && !valid)} onClick={sendWithPdf}>
-              <Send /> {share ? 'Share PDF on WhatsApp' : 'Send PDF + message'}
-            </button>
-          )}
-        </div>
+      <div className="modal__foot" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        {opened ? (
+          <>
+            <span />
+            <div className="row" style={{ gap: 8 }}>
+              {file && <button className="btn btn-secondary" onClick={() => saveFile(file)}><FileDown /> Save PDF again</button>}
+              {!opened.blocked && <a className="btn btn-secondary" href={link} target="_blank" rel="noreferrer"><MessageCircle /> Open chat again</a>}
+              <button className="btn btn-primary" onClick={onClose}>Done</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="row" style={{ gap: 8 }}>
+              {file && <button className="btn btn-ghost btn-sm" onClick={() => saveFile(file)}><FileDown /> Download PDF</button>}
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              <button className={`btn ${pdf ? 'btn-secondary' : 'btn-whatsapp'}`} disabled={!valid} onClick={openChat}>
+                <MessageCircle /> {pdf ? 'Text only' : 'Open WhatsApp'}
+              </button>
+              {pdf && (
+                <button className="btn btn-whatsapp" disabled={!file || !valid} onClick={sendWithPdf}>
+                  <Send /> Open chat &amp; save PDF
+                </button>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </Modal>
   );

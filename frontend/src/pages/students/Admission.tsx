@@ -5,11 +5,12 @@ import { errText, useApp } from '../../app/AppContext';
 import { Avatar, Field, LoadError, Modal, MoneyInput, PageHeader, Segmented } from '../../components/ui';
 import { api, newKey, useQuery, write } from '../../api/client';
 import type { Course, Enquiry, FeeSummary, PayMode, Receipt, Student, Subtype, TimeSlot } from '../../api/types';
-import { date, iso, money, n } from '../../lib/format';
+import { date, iso, money, toPaise } from '../../lib/format';
 import { PayModePicker } from '../../components/PayModePicker';
 import { PlanEditor, evenPlan, planError, type PlanRow } from '../../components/PlanEditor';
 import { SubtypeChecks, activeOnly } from '../../components/SubtypeChecks';
 import { eligibleTimeSlots } from '../../lib/schedule';
+import { admissionPrice, MAX_ADMISSION_FEE_PAISE } from '../../lib/admissionPricing';
 
 interface AdmitResult { student: Student; fees: FeeSummary; capacity_warning: boolean; receipt: Receipt | null }
 
@@ -54,11 +55,15 @@ export default function Admission() {
     subtypeIds: ids,
     batchId: eligibleTimeSlots(slots, Number(current.courseId), ids)?.some((slot) => String(slot.id) === current.batchId) ? current.batchId : '',
   }));
-  const fee = n(course?.fee);
-  const discount = Number(f.discount || 0);
-  const net = Math.max(0, fee - discount);
-  const initial = Number(f.initial || 0);
-  const balance = Math.max(0, net - initial);
+  const { feePaise, usesSubtypeFees } = admissionPrice(course?.fee, selectedSubtypes);
+  const fee = feePaise / 100;
+  const discountPaise = toPaise(f.discount);
+  const initialPaise = toPaise(f.initial);
+  const discount = discountPaise / 100;
+  const initial = initialPaise / 100;
+  const netPaise = Math.max(0, feePaise - discountPaise);
+  const net = netPaise / 100;
+  const balance = Math.max(0, netPaise - initialPaise) / 100;
   const seats = batch?.seats_left ?? 0;
   const todayIso = iso(new Date());
   // 16 Nov (client): dates and amounts can be set by hand. "Number of installments" + "First due date" fill the
@@ -86,12 +91,13 @@ export default function Admission() {
     if (!f.courseId) e.courseId = 'Select a course';
     if (!batch) e.batchId = 'Select a compatible batch';
     if (f.subtypeIds.length && (!subtypes || subtypeError)) e.subtypes = 'Wait for the course subtypes to load';
+    if (feePaise > MAX_ADMISSION_FEE_PAISE) e.subtypes = 'The combined subtype fees exceed the maximum admission fee';
     if (planErr) e.plan = planErr;
-    if (discount > fee) e.discount = 'Discount can’t exceed the course fee';
+    if (discount > fee) e.discount = 'Discount can’t exceed the admission fee';
     if (initial > net) e.initial = `Can’t exceed net fee of ${money(net)}`;
     if (initial > 0 && f.mode === 'Bank' && !f.reference.trim()) e.reference = 'UTR / reference is required for bank transfers';
     return e;
-  }, [f, batch, subtypes, subtypeError, discount, fee, initial, net, planErr]);
+  }, [f, batch, subtypes, subtypeError, discount, fee, feePaise, initial, net, planErr]);
   const err = (k: string, server?: string) => (submitted ? errors[k] : undefined) ?? (server ? serverErrors[server] : undefined);
 
 
@@ -193,7 +199,7 @@ export default function Admission() {
                 </div>
               </div>
               <div className="form-grid">
-                <Field label="Course" required error={err('courseId', 'course_id')} htmlFor="course" hint={course ? `${course.duration_months ?? '—'} months · ${money(course.fee)}${course.description ? ` · ${course.description}` : ''}` : undefined}>
+                <Field label="Course" required error={err('courseId', 'course_id')} htmlFor="course" hint={course ? `${course.duration_months ?? '—'} months · Parent fee ${money(course.fee)}${course.description ? ` · ${course.description}` : ''}` : undefined}>
                   <select id="course" className="select" value={f.courseId} disabled={!!enquiry?.course} onChange={(e) => setF((x) => ({ ...x, courseId: e.target.value, subtypeIds: [], batchId: '' }))}>
                     <option value="">Select course…</option>
                     {courses?.map((c) => <option key={c.id} value={c.id}>{c.code} — {c.name}</option>)}
@@ -230,17 +236,17 @@ export default function Admission() {
                 </div>
               </div>
               <div className="form-grid cols-3">
-                <Field label="Course fee" htmlFor="cf">
+                <Field label="Admission fee" htmlFor="cf" hint={usesSubtypeFees ? 'Sum of the configured fees for the selected subtypes' : 'Parent-course fee'}>
                   <div className="input-group">
                     <span className="input-prefix">₹</span>
-                    <input id="cf" className="input num" readOnly value={fee ? fee.toLocaleString('en-IN') : '—'} />
+                    <input id="cf" className="input num" readOnly value={course ? fee.toLocaleString('en-IN') : '—'} />
                   </div>
                 </Field>
                 <Field label="Discount" error={err('discount', 'discount')} htmlFor="disc">
-                  <MoneyInput id="disc" value={f.discount} onChange={(v) => set('discount', v)} />
+                  <MoneyInput id="disc" value={f.discount} onChange={(v) => set('discount', v)} allowPaise />
                 </Field>
                 <Field label="Paid now" error={err('initial', 'paid_now')} hint="Receipt is generated automatically" htmlFor="init">
-                  <MoneyInput id="init" value={f.initial} onChange={(v) => set('initial', v)} />
+                  <MoneyInput id="init" value={f.initial} onChange={(v) => set('initial', v)} allowPaise />
                 </Field>
                 {initial > 0 && (
                   <>
@@ -292,11 +298,11 @@ export default function Admission() {
                 </div>
               </div>
               <div className="summary-box">
-                <div className="kv"><span>Course fee</span><strong className="num">{money(fee)}</strong></div>
                 {selectedSubtypes.map((subtype) => <div className="kv" key={subtype.id}>
-                  <span>{subtype.name} <small className="muted">(reference fee)</small></span>
+                  <span>{subtype.name}</span>
                   <strong className="num">{subtype.fee == null ? 'Fee not set' : money(subtype.fee)}</strong>
                 </div>)}
+                <div className="kv"><span>{usesSubtypeFees ? 'Subtype fee total' : 'Parent-course fee'}</span><strong className="num">{money(fee)}</strong></div>
                 <div className="kv"><span>Discount</span><strong className="num">− {money(discount)}</strong></div>
                 <div className="kv"><span>Final payable</span><strong className="num">{money(net)}</strong></div>
                 <div className="kv">

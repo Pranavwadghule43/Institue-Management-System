@@ -128,19 +128,20 @@ _TENS = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eigh
 
 
 def amount_in_words(v) -> str:
-    """Mirror of amountInWords in src/lib/format.ts (Indian system, rupees rounded)."""
+    """Indian numbering for rupees and paise on newly issued documents."""
     def two(x):
         return _ONES[x] if x < 20 else _TENS[x // 10] + (" " + _ONES[x % 10] if x % 10 else "")
 
     def three(x):
         return " ".join(p for p in [f"{_ONES[x // 100]} Hundred" if x // 100 else "", two(x % 100) if x % 100 else ""] if p)
 
-    n = int(Decimal(v).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    if n == 0:
+    n, paise = divmod(int(q2(v) * 100), 100)
+    if n == 0 and paise == 0:
         return "Zero Rupees Only"
-    parts = [f"{two(n // 10**7)} Crore" if n // 10**7 else "", f"{two(n % 10**7 // 10**5)} Lakh" if n % 10**7 // 10**5 else "",
+    parts = [f"{three(n // 10**7)} Crore" if n // 10**7 else "", f"{two(n % 10**7 // 10**5)} Lakh" if n % 10**7 // 10**5 else "",
              f"{two(n % 10**5 // 1000)} Thousand" if n % 10**5 // 1000 else "", three(n % 1000) if n % 1000 else ""]
-    return "Rupees " + " ".join(p for p in parts if p) + " Only"
+    rupees = " ".join(p for p in parts if p) or "Zero"
+    return f"Rupees {rupees}" + (f" and {two(paise)} Paise" if paise else "") + " Only"
 
 
 def jsonable(v):

@@ -69,6 +69,7 @@ export interface ReceiptSnapshot {
 export interface Receipt {
   receipt_no: string; payment_id: number; issued_at: string; status: 'Valid' | 'Reversed'; reversed_at: string | null; reversal_reason: string | null;
   next_payment_date: string; snapshot: ReceiptSnapshot;
+  send_to?: { name: string; whatsapp_number: string } | null; // live registered WhatsApp number (19 Nov)
 }
 
 export interface Customer {

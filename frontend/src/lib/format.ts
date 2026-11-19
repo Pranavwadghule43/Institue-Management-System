@@ -9,6 +9,7 @@ export const toDate = (d: D) => (typeof d === 'string' ? new Date(d.length === 1
 export const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 /** API money strings ("1500.00") -> number, for display maths only; the server owns every total */
 export const n = (v: string | number | null | undefined) => Number(v ?? 0);
+export const toPaise = (v: string | number | null | undefined) => Math.round(n(v) * 100);
 
 /** ₹1,24,500 — Indian digit grouping (whole rupees unless paise=true or the amount has paise) */
 export const money = (v: number | string | null | undefined, paise = false) => {

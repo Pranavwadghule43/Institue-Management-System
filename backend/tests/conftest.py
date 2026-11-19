@@ -12,7 +12,8 @@ from cryptography.fernet import Fernet
 
 logging.getLogger("pgserver").setLevel(logging.WARNING)
 _srv = pgserver.get_server(tempfile.mkdtemp(prefix="ims-pg-"), cleanup_mode="delete")
-os.environ["DATABASE_URL"] = _srv.get_uri().replace("postgresql://", "postgresql+psycopg://", 1)
+TEST_DATABASE_URL = _srv.get_uri().replace("postgresql://", "postgresql+psycopg://", 1)
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ["AADHAAR_ENC_KEY"] = Fernet.generate_key().decode()
 os.environ["AADHAAR_HASH_KEY"] = "test-hash-key"
 os.environ["FILE_STORAGE_ROOT"] = tempfile.mkdtemp(prefix="ims-files-")
@@ -23,6 +24,7 @@ from datetime import date, timedelta  # noqa: E402
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
+from sqlalchemy.engine import make_url  # noqa: E402
 
 from app import cli  # noqa: E402
 from app.common import today  # noqa: E402
@@ -47,6 +49,9 @@ CREATE TRIGGER ims_account_cap_before_insert BEFORE INSERT ON public.users FOR E
 CREATE TRIGGER ims_account_cap_before_role_update BEFORE UPDATE OF role ON public.users FOR EACH ROW
   WHEN (((old.role)::text IS DISTINCT FROM (new.role)::text)) EXECUTE FUNCTION ims_enforce_user_account_limit();
 """
+
+if engine.url != make_url(TEST_DATABASE_URL):
+    raise RuntimeError("IMS test fixtures require their disposable pgserver database.")
 
 Base.metadata.create_all(engine)
 with engine.begin() as c:
