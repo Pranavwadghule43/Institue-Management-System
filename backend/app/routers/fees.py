@@ -13,7 +13,7 @@ from ..common import (
 )
 from ..db import get_db
 from ..errors import bad, conflict, not_found
-from ..ledger import fee_cols, fee_summary, reallocate
+from ..ledger import allocate_fifo, fee_cols, fee_summary, load_installments, reallocate, summarize_installments
 from ..models import FeeReceipt, FeeReminderEvent, Student, StudentInstallment, StudentPayment as P
 from ..security import CurrentUser, require, require_admin, require_any
 from .academics import fmt_time
@@ -29,14 +29,12 @@ def lock_student(db: Session, code: str) -> Student:
     return s
 
 
-def paid_total(db: Session, student_id: int) -> Decimal:
-    return db.scalar(select(func.coalesce(func.sum(StudentInstallment.paid_amount), 0)).where(StudentInstallment.student_id == student_id)) or ZERO
-
-
 def record_payment(db: Session, s: Student, amount: Decimal, mode: str, reference: str | None, remarks: str | None,
-                   user: CurrentUser, idempotency_key: str | None = None) -> tuple[P, FeeReceipt]:
+                   user: CurrentUser, idempotency_key: str | None = None, *,
+                   new_installments: list[StudentInstallment] | None = None) -> tuple[P, FeeReceipt, dict]:
     """Payment + FIFO allocation + immutable receipt + audit, in the caller's transaction (student row must be locked)."""
-    previous = paid_total(db, s.id)
+    installments = load_installments(db, s.id) if new_installments is None else new_installments
+    previous = sum((row.paid_amount for row in installments), ZERO)
     balance = s.net_fee - previous
     if amount <= 0 or amount > balance:
         raise bad("AMOUNT_EXCEEDS_BALANCE", f"Amount can't exceed the balance of {money(balance)}.", "amount")
@@ -46,17 +44,20 @@ def record_payment(db: Session, s: Student, amount: Decimal, mode: str, referenc
           received_at=now(), collected_by=user.id, idempotency_key=idempotency_key)
     db.add(p)
     db.flush()
-    reallocate(db, s.id)
-    r = _issue_receipt(db, s, p, user, previous)
+    if new_installments is None:
+        reallocate(db, s.id, installments)
+    else:
+        allocate_fifo(db, installments, [p])
+    summary = summarize_installments(s, today(), installments)
+    r = _issue_receipt(db, s, p, user, previous, summary)
     audit(db, user.id, "PAYMENT_CREATED", "Payment", r.receipt_code, f"Collected {money(amount)} from {s.full_name} ({mode})",
           after={"amount": money(amount), "mode": mode, "student": s.student_code})
-    return p, r
+    return p, r, summary
 
 
-def _issue_receipt(db: Session, s: Student, p: P, user: CurrentUser, previous: Decimal) -> FeeReceipt:
-    code = next_code(db, "RECEIPT")
+def _issue_receipt(db: Session, s: Student, p: P, user: CurrentUser, previous: Decimal, summary: dict) -> FeeReceipt:
     inst = institute(db)
-    summary = fee_summary(db, s, today())
+    code = next_code(db, "RECEIPT")
     total = previous + p.amount
     balance = s.net_fee - total
     next_date = "NIL" if balance <= 0 else summary["next_due"]["due_date"].isoformat() if summary["next_due"] else "Schedule needed"
@@ -103,7 +104,8 @@ def _receipt_code(db: Session, payment_id: int) -> str | None:
 @router.get("/fees/students/{code}/summary")
 def student_fee_summary(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(require_any("fees.view", "fees.collect"))):
     # QA-12: the Fee Collection screen needs this summary, so "Collect fees" alone must be able to read it
-    s = db.scalars(select(Student).where(Student.student_code == code, Student.deleted_at.is_(None))).first()
+    s = db.scalars(select(Student).options(joinedload(Student.course), joinedload(Student.time_slot))
+                   .where(Student.student_code == code, Student.deleted_at.is_(None))).first()
     if s is None:
         raise not_found("student")
     return {"student": {"code": s.student_code, "name": s.full_name, "mobile": s.mobile, "whatsapp_number": s.whatsapp_number or s.mobile, "status": s.status,
@@ -129,7 +131,7 @@ def collect_fee(code: str, body: PaymentIn, idempotency_key: str | None = Header
             receipt = db.scalar(select(FeeReceipt).where(FeeReceipt.payment_id == prior.id))
             return {"payment": payment_out(prior, receipt.receipt_code if receipt else None, s, user_names(db, [prior.collected_by])),
                     "receipt": receipt_out(receipt, prior, s) if receipt else None, "replayed": True}
-    p, r = record_payment(db, s, body.amount, body.payment_mode, body.reference, body.remarks, user, idempotency_key)
+    p, r, _ = record_payment(db, s, body.amount, body.payment_mode, body.reference, body.remarks, user, idempotency_key)
     db.commit()
     return {"payment": payment_out(p, r.receipt_code, s, {user.id: user.full_name}), "receipt": receipt_out(r, p, s), "replayed": False}
 
@@ -231,12 +233,16 @@ def list_receipts(q: str | None = None, mode: PayMode | None = None, include_rev
 @router.get("/receipts/{code}")
 @router.get("/receipts/{code}/print-data")
 def get_receipt(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(require("receipts.view_print"))):
-    row = db.execute(select(FeeReceipt, P, Student).join(P, P.id == FeeReceipt.payment_id).join(Student, Student.id == P.student_id)
-                     .options(load_only(Student.full_name, Student.whatsapp_number, Student.mobile))
-                     .where(FeeReceipt.receipt_code == code)).one_or_none()
+    return receipt_out(*receipt_row(db, code))
+
+
+def receipt_row(db: Session, code: str, *, lock: bool = False):
+    stmt = select(FeeReceipt, P, Student).join(P, P.id == FeeReceipt.payment_id).join(Student, Student.id == P.student_id).options(
+        load_only(Student.full_name, Student.whatsapp_number, Student.mobile)).where(FeeReceipt.receipt_code == code)
+    row = db.execute(stmt.with_for_update(of=P) if lock else stmt).one_or_none()
     if row is None:
         raise not_found("receipt")
-    return receipt_out(*row)
+    return row
 
 
 class ShareIn(In):

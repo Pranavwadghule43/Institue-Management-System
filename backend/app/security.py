@@ -15,14 +15,15 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.orm import Session
 
-from .common import In, Str, audit, now
+from .common import In, Str, audit, audit_values, now
 from .config import settings
 from .db import get_db
 from .errors import AppError
-from .models import LoginAttempt, Permission, User, UserPermission, UserSession
+from .models import AuditLog, LoginAttempt, Permission, User, UserPermission, UserSession
+from .timing import timed_operation
 
 # (code, description) grouped as in the React Permissions page.
 PERMISSIONS: list[tuple[str, str]] = [
@@ -117,10 +118,6 @@ def password_problem(password: str, username: str | None = None) -> str | None:
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
-
-
-def user_permissions(db: Session, user_id: int) -> frozenset[str]:
-    return frozenset(db.scalars(select(Permission.code).join(UserPermission).where(UserPermission.user_id == user_id)))
 
 
 _bearer = HTTPBearer(auto_error=False)
@@ -219,25 +216,30 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     if ip and (db.scalar(select(func.count()).where(LoginAttempt.ip_address == ip, LoginAttempt.succeeded.is_(False),
                                                     LoginAttempt.attempted_at > window)) or 0) >= IP_FAILURE_LIMIT:
         raise AppError(429, "TOO_MANY_ATTEMPTS", "Too many failed sign-ins from this device. Try again later.")
-    if u is None or not u.is_active:
-        verify_password(body.password, DUMMY_HASH)  # same scrypt cost as a real check, so timing doesn't reveal valid usernames (QA-17)
-        fail()
-    if u.locked_until and u.locked_until > now():
+    if u is not None and u.is_active and u.locked_until and u.locked_until > now():
         fail(429, "LOGIN_LOCKED", "Too many attempts. Sign-in is paused, try again later.")
-    if not verify_password(body.password, u.password_hash):
+    with timed_operation("password_verify"):
+        valid = verify_password(body.password, u.password_hash if u is not None and u.is_active else DUMMY_HASH)
+    if u is None or not u.is_active:
+        fail()
+    if not valid:
         u.failed_attempts += 1
         if u.failed_attempts >= settings.login_max_attempts:
             u.locked_until, u.failed_attempts = now() + timedelta(minutes=settings.login_lock_minutes), 0
             audit(db, u.id, "LOGIN_LOCKED", "Auth", u.username, f"{settings.login_max_attempts} failed attempts, account locked")
         fail()
     token = secrets.token_urlsafe(32)
-    u.failed_attempts, u.locked_until, u.last_login_at = 0, None, now()
-    expires = now() + timedelta(hours=settings.session_hours)
-    db.add(UserSession(user_id=u.id, token_hash=token_hash(token), expires_at=expires, last_activity_at=now()))
-    db.add(LoginAttempt(username=username, succeeded=True, ip_address=ip))
-    audit(db, u.id, "LOGIN_SUCCESS", "Auth", u.username, "Signed in")
-    # Read before the commit (same transaction): saves opening a second transaction just for this lookup.
-    cu = CurrentUser(u.id, u.username, u.full_name, u.role, u.designation, user_permissions(db, u.id))
+    signed_in_at = now()
+    expires = signed_in_at + timedelta(hours=settings.session_hours)
+    # The user row remains locked from the initial lookup. Group disjoint writes and
+    # the permission lookup in one round trip. A failure rolls back the whole login.
+    updates = update(User.__table__).where(User.id == u.id).values(failed_attempts=0, locked_until=None, last_login_at=signed_in_at)
+    session = insert(UserSession.__table__).values(user_id=u.id, token_hash=token_hash(token), expires_at=expires, last_activity_at=signed_in_at)
+    attempt = insert(LoginAttempt.__table__).values(username=username, succeeded=True, ip_address=ip)
+    entry = insert(AuditLog.__table__).values(**audit_values(u.id, "LOGIN_SUCCESS", "Auth", u.username, "Signed in"))
+    permissions = select(Permission.code).join(UserPermission).where(UserPermission.user_id == u.id).add_cte(
+        updates.cte("user_login"), session.cte("new_session"), attempt.cte("successful_attempt"), entry.cte("audit_login"))
+    cu = CurrentUser(u.id, u.username, u.full_name, u.role, u.designation, frozenset(db.scalars(permissions)))
     db.commit()
     return {"token": token, "token_type": "bearer", "expires_at": expires, "user": me_payload(cu)}
 

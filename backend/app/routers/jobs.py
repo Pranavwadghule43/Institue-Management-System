@@ -114,8 +114,8 @@ def list_jobs(q: str | None = None, status: Literal["Pending", "In Process", "On
     if customer_code:
         stmt = stmt.where(Customer.customer_code == customer_code)
     counts = dict(db.execute(stmt.with_only_columns(ServiceJob.status, func.count()).group_by(ServiceJob.status)).all())
-    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    jobs = db.scalars(stmt.options(selectinload(ServiceJob.items).selectinload(ServiceJobItem.service).selectinload(Service.category), selectinload(ServiceJob.customer))
+    total = sum(counts.values())
+    jobs = db.scalars(stmt.options(selectinload(ServiceJob.items).joinedload(ServiceJobItem.service).joinedload(Service.category), joinedload(ServiceJob.customer))
                       .order_by(ServiceJob.created_at.desc(), ServiceJob.id.desc()).limit(p.page_size).offset((p.page - 1) * p.page_size)).all()
     return {"items": jobs_payload(db, jobs), "page": p.page, "page_size": p.page_size, "total": total, "pages": -(-total // p.page_size),
             "status_counts": {s: counts.get(s, 0) for s in TRANSITIONS}}
@@ -261,15 +261,15 @@ def list_documents(code: str, db: Session = Depends(get_db), user: CurrentUser =
 
 
 @router.post("/{code}/documents", status_code=201)
-async def upload_document(code: str, file: UploadFile = File(...), document_type: str | None = Form(None, max_length=100),
-                          db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_documents.upload"))):
+def upload_document(code: str, file: UploadFile = File(...), document_type: str | None = Form(None, max_length=100),
+                    db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_documents.upload"))):
     j = get_job(db, code)
     original = re.sub(r"[\x00-\x1f\\/]", "_", Path(file.filename or "document").name)[:255]
     ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
     if ext not in ALLOWED:
         raise bad("FILE_TYPE_NOT_ALLOWED", "Only PDF, JPG, JPEG and PNG files are allowed.", "file")
     limit = settings.max_upload_mb * 1024 * 1024
-    data = await file.read(limit + 1)
+    data = file.file.read(limit + 1)
     if len(data) > limit:
         raise bad("FILE_TOO_LARGE", f"Files must be {settings.max_upload_mb} MB or smaller.", "file")
     mime, magic = ALLOWED[ext]
@@ -278,14 +278,14 @@ async def upload_document(code: str, file: UploadFile = File(...), document_type
     key = f"jobs/{j.id}/{uuid.uuid4().hex}.{ext}"
     path = _storage_root() / key
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    f = FileRow(storage_key=key, original_name=original, mime_type=mime, size_bytes=len(data), checksum=hashlib.sha256(data).hexdigest(), uploaded_by=user.id)
-    db.add(f)
-    db.flush()
-    d = ServiceJobDocument(job_id=j.id, file_id=f.id, document_type=(document_type or "").strip() or None, uploaded_by=user.id)
-    db.add(d)
-    audit(db, user.id, "DOCUMENT_UPLOADED", "Service Job", j.job_code, f"{d.document_type or original} uploaded to {j.job_code}")
     try:
+        path.write_bytes(data)
+        f = FileRow(storage_key=key, original_name=original, mime_type=mime, size_bytes=len(data), checksum=hashlib.sha256(data).hexdigest(), uploaded_by=user.id)
+        db.add(f)
+        db.flush()
+        d = ServiceJobDocument(job_id=j.id, file_id=f.id, document_type=(document_type or "").strip() or None, uploaded_by=user.id)
+        db.add(d)
+        audit(db, user.id, "DOCUMENT_UPLOADED", "Service Job", j.job_code, f"{d.document_type or original} uploaded to {j.job_code}")
         db.commit()
     except Exception:
         path.unlink(missing_ok=True)  # don't leave orphan files when the DB write fails

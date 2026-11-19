@@ -1,8 +1,9 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { FileDown, FileText, MessageCircle, Send, X } from 'lucide-react';
 import { Field, Modal } from './ui';
 import { waLink, waNumber } from '../lib/whatsapp';
 import { saveFile } from '../lib/pdf';
+import { AutomaticWhatsApp } from './AutomaticWhatsApp';
 
 /** Renders WhatsApp's *bold* / _italic_ markers the way the customer will see them */
 function WaText({ text }: { text: string }) {
@@ -28,18 +29,25 @@ function WaText({ text }: { text: string }) {
 
 // Open the recipient's chat and download the file. The user attaches the PDF and sends it in WhatsApp.
 export function WhatsAppSend({
-  open, onClose, title, name, phone, message, pdf, onOpened, recordLabel = 'record',
+  open, onClose, title, name, phone, message, pdf, onOpened, automaticPath, recordLabel = 'record',
 }: {
   open: boolean; onClose: () => void; title: string; name: string; phone: string | null | undefined; message: string; pdf?: () => Promise<File>;
-  onOpened?: (phone: string) => void; recordLabel?: string;
+  onOpened?: (phone: string) => void; recordLabel?: string; automaticPath?: string;
 }) {
   const [num, setNum] = useState(phone ?? '');
   const [text, setText] = useState(message);
   const [file, setFile] = useState<File | null>(null);
   const [pdfError, setPdfError] = useState('');
   const [opened, setOpened] = useState<{ blocked: boolean } | null>(null);
+  const [manual, setManual] = useState<{ notice?: string } | null>(null);
+  const showManual = useCallback((notice?: string) => setManual({ notice }), []);
+  const automatic = !!automaticPath && !manual;
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setManual(null);
+      return;
+    }
+    if (automatic) return;
     setNum(phone ?? '');
     setText(message);
     setFile(null);
@@ -52,7 +60,7 @@ export function WhatsAppSend({
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, automatic]);
   const { local, problem } = waNumber(num);
   const valid = !problem;
   const registered = waNumber(phone).local;
@@ -84,6 +92,9 @@ export function WhatsAppSend({
     openChat();
   };
 
+  if (automaticPath && automatic) {
+    return open ? <AutomaticWhatsApp key={automaticPath} path={automaticPath} title={title} onClose={onClose} onManual={showManual} /> : null;
+  }
   return (
     <Modal open={open} onClose={onClose} size="lg">
       <div className="wa">
@@ -92,6 +103,7 @@ export function WhatsAppSend({
             <h2 style={{ fontSize: 16 }}>{title}</h2>
             <button className="icon-btn sm" onClick={onClose} aria-label="Close"><X /></button>
           </div>
+          {manual?.notice && <p className="muted">{manual.notice}</p>}
           {opened ? (
             <div className="wa-steps" role="status">
               {opened.blocked ? (

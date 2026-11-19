@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   AlertCircle, Bell, Briefcase, ChevronRight, CornerDownLeft, FileText, KeyRound, LogOut, Menu as MenuIcon,
@@ -24,9 +24,20 @@ export function AppShell() {
   const [drawer, setDrawer] = useState(false);
   const [cmdk, setCmdk] = useState(false);
   const loc = useLocation();
-  const { user, role } = useApp();
+  const { user, role, can } = useApp();
+  const canAdmit = can('students.create');
 
   useEffect(() => setDrawer(false), [loc.pathname]);
+  useEffect(() => {
+    if (!canAdmit) return;
+    const preload = () => { void import('../pages/students/Admission').catch(() => {}); };
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(preload, { timeout: 600 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const timer = setTimeout(preload, 100);
+    return () => clearTimeout(timer);
+  }, [canAdmit]);
   useEffect(() => {
     try {
       localStorage.setItem('ims.nav', collapsed ? 'collapsed' : 'open');
@@ -52,7 +63,9 @@ export function AppShell() {
       <div className="main">
         <Topbar onToggleNav={() => setCollapsed((c) => !c)} collapsed={collapsed} onSearch={() => setCmdk(true)} />
         <main className="content" key={loc.pathname}>
-          <Outlet />
+          <Suspense fallback={<div className="denied"><span className="spinner" role="status" aria-label="Loading page" /></div>}>
+            <Outlet />
+          </Suspense>
         </main>
         <footer className="appfoot no-print">
           <span>

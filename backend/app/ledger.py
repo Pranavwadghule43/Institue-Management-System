@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import and_, case, delete, func, select
+from sqlalchemy import Date, DateTime, and_, case, cast, delete, func, literal, null, select, union_all
 from sqlalchemy.orm import Session
 
 from .common import ZERO, bounds, local_date, money, one_trip, q2
@@ -64,8 +64,15 @@ def fee_cols(t: date) -> FeeCols:
     return FeeCols(paid, Student.net_fee - paid, next_sq.c.due, next_sq.c.remaining, state, paid_sq, next_sq)
 
 
+def load_installments(db: Session, student_id: int) -> list[I]:
+    return list(db.scalars(select(I).where(I.student_id == student_id).order_by(I.installment_no)))
+
+
 def fee_summary(db: Session, s: Student, t: date) -> dict:
-    rows = db.scalars(select(I).where(I.student_id == s.id).order_by(I.installment_no)).all()
+    return summarize_installments(s, t, load_installments(db, s.id))
+
+
+def summarize_installments(s: Student, t: date, rows: list[I]) -> dict:
     schedule = []
     for r in rows:
         no = r.installment_no - INSTALLMENT_NO_OFFSET
@@ -89,15 +96,20 @@ def fee_summary(db: Session, s: Student, t: date) -> dict:
     }
 
 
-def reallocate(db: Session, student_id: int) -> None:
+def reallocate(db: Session, student_id: int, installments: list[I] | None = None) -> None:
     """Rebuild allocations FIFO from valid payments (oldest first), exactly like the UI's pooled schedule.
 
     Caller must hold the student row lock. Running it after every payment and reversal keeps
     student_installments.paid_amount == sum of valid payments, with no partial state to unwind.
     """
-    insts = db.scalars(select(I).where(I.student_id == student_id).order_by(I.installment_no)).all()
+    insts = load_installments(db, student_id) if installments is None else installments
     pays = db.scalars(select(P).where(P.student_id == student_id, P.status == "Valid").order_by(P.received_at, P.id)).all()
     db.execute(delete(A).where(A.payment_id.in_(select(P.id).where(P.student_id == student_id))))
+    allocate_fifo(db, insts, pays)
+    db.flush()
+
+
+def allocate_fifo(db: Session, insts: list[I], pays) -> None:
     for i in insts:
         i.paid_amount = ZERO
     idx = 0
@@ -114,7 +126,6 @@ def reallocate(db: Session, student_id: int) -> None:
                 idx += 1
         if left > 0:
             raise AppError(400, "AMOUNT_EXCEEDS_BALANCE", "Payments exceed the student's net fee.")
-    db.flush()
 
 
 # ----------------------------------------------------------------- income / expense totals
@@ -145,23 +156,26 @@ def month_key(d: date) -> str:
 
 
 def series(db: Session, d_from: date, d_to: date, by: str = "day") -> list[dict]:
-    """Daily or monthly income/expense buckets in institute-local dates, every bucket present.
-
-    ponytail: buckets in Python to stay portable (AT TIME ZONE vs CONVERT_TZ); fine for one institute's volume.
-    """
+    """Fetch the three ledger streams in one query and bucket by institute-local date."""
     start, end = bounds(d_from, d_to)
     key = (lambda d: d.isoformat()) if by == "day" else month_key
     acc: dict[str, dict] = defaultdict(lambda: {"fees": ZERO, "services": ZERO, "expenses": ZERO, "receipts": 0, "bills": 0})
-    for at, amt in db.execute(select(P.received_at, P.amount).where(P.status == "Valid", P.received_at >= start, P.received_at < end)):
-        b = acc[key(local_date(at))]
-        b["fees"] += amt
-        b["receipts"] += 1
-    for at, amt in db.execute(select(ServiceBill.paid_at, ServiceBill.grand_total).where(ServiceBill.status == "Paid", ServiceBill.paid_at >= start, ServiceBill.paid_at < end)):
-        b = acc[key(local_date(at))]
-        b["services"] += amt
-        b["bills"] += 1
-    for d, amt in db.execute(select(Expense.expense_date, Expense.amount).where(Expense.deleted_at.is_(None), Expense.expense_date.between(d_from, d_to))):
-        acc[key(d)]["expenses"] += amt
+    no_day = cast(null(), Date)
+    no_timestamp = cast(null(), DateTime(timezone=True))
+    stmt = union_all(
+        select(literal("fees"), P.received_at, no_day, P.amount).where(
+            P.status == "Valid", P.received_at >= start, P.received_at < end),
+        select(literal("services"), ServiceBill.paid_at, no_day, ServiceBill.grand_total).where(
+            ServiceBill.status == "Paid", ServiceBill.paid_at >= start, ServiceBill.paid_at < end),
+        select(literal("expenses"), no_timestamp, Expense.expense_date, func.sum(Expense.amount)).where(
+            Expense.deleted_at.is_(None), Expense.expense_date.between(d_from, d_to)).group_by(Expense.expense_date),
+    )
+    counters = {"fees": "receipts", "services": "bills"}
+    for source, at, day, amount in db.execute(stmt):
+        bucket = acc[key(day if day is not None else local_date(at))]
+        bucket[source] += amount
+        if source in counters:
+            bucket[counters[source]] += 1
     keys, d = [], d_from
     while d <= d_to:
         k = key(d)

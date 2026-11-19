@@ -1,11 +1,13 @@
 // 16 Nov (client): a student / enquiry can take several sub-types of the course, picked with checkboxes.
 import { useQuery } from '../api/client';
-import type { Subtype } from '../api/types';
+import type { Subtype, SubtypeRef } from '../api/types';
 
-export function SubtypeChecks({ courseId, value, onChange, error, label = 'Course sub-types' }: {
+export function SubtypeChecks({ courseId, value, onChange, error, label = 'Course sub-types', options }: {
   courseId: string | number | null | undefined; value: number[]; onChange: (ids: number[]) => void; error?: string; label?: string;
+  options?: { data?: SubtypeRef[]; error?: Error; reload: () => void };
 }) {
-  const { data: subtypes, error: loadError, reload } = useQuery<Subtype[]>(courseId ? `/courses/${courseId}/subtypes` : null, { active: true });
+  const query = useQuery<Subtype[]>(courseId && !options ? `/courses/${courseId}/subtypes` : null, { active: true });
+  const { data: subtypes, error: loadError, reload } = options ?? query;
   if (!courseId) return null;
   const toggle = (id: number, on: boolean) => onChange(on ? [...value.filter((x) => x !== id), id] : value.filter((x) => x !== id));
   return (

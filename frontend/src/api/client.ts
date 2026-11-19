@@ -33,7 +33,7 @@ export function setToken(t: string | null) {
 export const setUnauthorizedHandler = (fn: () => void) => (onUnauthorized = fn);
 
 type Query = Record<string, string | number | boolean | null | undefined>;
-interface Opts { method?: string; body?: unknown; query?: Query; idempotencyKey?: string }
+interface Opts { method?: string; body?: unknown; query?: Query; idempotencyKey?: string; signal?: AbortSignal }
 
 const qs = (q?: Query) => {
   const p = new URLSearchParams();
@@ -42,7 +42,7 @@ const qs = (q?: Query) => {
   return s ? `?${s}` : '';
 };
 
-async function request(path: string, { method = 'GET', body, query, idempotencyKey }: Opts = {}): Promise<Response> {
+async function request(path: string, { method = 'GET', body, query, idempotencyKey, signal }: Opts = {}): Promise<Response> {
   const headers: Record<string, string> = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
@@ -50,7 +50,7 @@ async function request(path: string, { method = 'GET', body, query, idempotencyK
   if (body !== undefined && !isForm) headers['Content-Type'] = 'application/json';
   let res: Response;
   try {
-    res = await fetch(API_URL + path + qs(query), { method, headers, body: body === undefined ? undefined : isForm ? body : JSON.stringify(body) });
+    res = await fetch(API_URL + path + qs(query), { method, headers, signal, body: body === undefined ? undefined : isForm ? body : JSON.stringify(body) });
   } catch {
     throw new ApiError(0, 'NETWORK_ERROR', 'Cannot reach the server. Check your connection and try again.');
   }

@@ -1,27 +1,39 @@
-import type { ReactNode } from 'react';
+import { lazy, type ReactNode } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppProvider, useApp } from './app/AppContext';
 import { AppShell } from './app/AppShell';
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import StudentList from './pages/students/StudentList';
-import Admission from './pages/students/Admission';
-import { EnquiryDashboard, EnquiryDetail, NewEnquiry } from './pages/students/Enquiries';
-import StudentProfile from './pages/students/StudentProfile';
-import { Courses } from './pages/academics/Academics';
-import FeeCollection from './pages/fees/FeeCollection';
-import { FeeReminders, PaymentHistory, ReceiptView } from './pages/fees/FeeFinance';
-import Jobs from './pages/services/Jobs';
-import JobDetail from './pages/services/JobDetail';
-import { CustomerProfile, Customers } from './pages/services/Customers';
-import { Bills } from './pages/services/Bills';
-import BillDesk from './pages/services/BillDesk';
-import ServiceMaster from './pages/services/ServiceMaster';
-import Expenses from './pages/Expenses';
-import { DailyCash, ProfitLoss } from './pages/Finance';
-import { ReportViewer, ReportsCenter } from './pages/Reports';
-import { Audit, Backup, Permissions, Settings, Staff } from './pages/Admin';
 import NotFound, { PermissionDenied } from './pages/NotFound';
+
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const StudentList = lazy(() => import('./pages/students/StudentList'));
+const Admission = lazy(() => import('./pages/students/Admission'));
+const EnquiryDashboard = lazy(() => import('./pages/students/Enquiries').then((m) => ({ default: m.EnquiryDashboard })));
+const EnquiryDetail = lazy(() => import('./pages/students/Enquiries').then((m) => ({ default: m.EnquiryDetail })));
+const NewEnquiry = lazy(() => import('./pages/students/Enquiries').then((m) => ({ default: m.NewEnquiry })));
+const StudentProfile = lazy(() => import('./pages/students/StudentProfile'));
+const Courses = lazy(() => import('./pages/academics/Academics').then((m) => ({ default: m.Courses })));
+const FeeCollection = lazy(() => import('./pages/fees/FeeCollection'));
+const FeeReminders = lazy(() => import('./pages/fees/FeeFinance').then((m) => ({ default: m.FeeReminders })));
+const PaymentHistory = lazy(() => import('./pages/fees/FeeFinance').then((m) => ({ default: m.PaymentHistory })));
+const ReceiptView = lazy(() => import('./pages/fees/FeeFinance').then((m) => ({ default: m.ReceiptView })));
+const Jobs = lazy(() => import('./pages/services/Jobs'));
+const JobDetail = lazy(() => import('./pages/services/JobDetail'));
+const CustomerProfile = lazy(() => import('./pages/services/Customers').then((m) => ({ default: m.CustomerProfile })));
+const Customers = lazy(() => import('./pages/services/Customers').then((m) => ({ default: m.Customers })));
+const Bills = lazy(() => import('./pages/services/Bills').then((m) => ({ default: m.Bills })));
+const BillDesk = lazy(() => import('./pages/services/BillDesk'));
+const ServiceMaster = lazy(() => import('./pages/services/ServiceMaster'));
+const Expenses = lazy(() => import('./pages/Expenses'));
+const DailyCash = lazy(() => import('./pages/Finance').then((m) => ({ default: m.DailyCash })));
+const ProfitLoss = lazy(() => import('./pages/Finance').then((m) => ({ default: m.ProfitLoss })));
+const ReportViewer = lazy(() => import('./pages/Reports').then((m) => ({ default: m.ReportViewer })));
+const ReportsCenter = lazy(() => import('./pages/Reports').then((m) => ({ default: m.ReportsCenter })));
+const Audit = lazy(() => import('./pages/Admin').then((m) => ({ default: m.Audit })));
+const Backup = lazy(() => import('./pages/Admin').then((m) => ({ default: m.Backup })));
+const Permissions = lazy(() => import('./pages/Admin').then((m) => ({ default: m.Permissions })));
+const Settings = lazy(() => import('./pages/Admin').then((m) => ({ default: m.Settings })));
+const Staff = lazy(() => import('./pages/Admin').then((m) => ({ default: m.Staff })));
 
 /* Route guards are UX only — the API returns 401/403 regardless. */
 function Guard({ perm, children }: { perm: string; children: ReactNode }) {

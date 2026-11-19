@@ -4,7 +4,7 @@ import { AlertTriangle, CheckCircle2, Info, Printer, Save } from 'lucide-react';
 import { errText, useApp } from '../../app/AppContext';
 import { Avatar, Field, LoadError, Modal, MoneyInput, PageHeader, Segmented } from '../../components/ui';
 import { api, newKey, useQuery, write } from '../../api/client';
-import type { Course, Enquiry, FeeSummary, PayMode, Receipt, Student, Subtype, TimeSlot } from '../../api/types';
+import type { Course, Enquiry, FeeSummary, PayMode, Receipt, Student, TimeSlot } from '../../api/types';
 import { date, iso, money, toPaise } from '../../lib/format';
 import { PayModePicker } from '../../components/PayModePicker';
 import { PlanEditor, evenPlan, planError, type PlanRow } from '../../components/PlanEditor';
@@ -34,8 +34,7 @@ export default function Admission() {
     setF((x) => ({ ...x, name: enquiry.student_name, fatherName: enquiry.guardian_name ?? '', phone: enquiry.mobile, email: enquiry.email ?? '',
       address: enquiry.address ?? '', courseId: enquiry.course ? String(enquiry.course.id) : '', subtypeIds: (enquiry.course_subtypes ?? []).map((x) => x.id), batchId: '' }));
   }
-  const { data: courses } = useQuery<Course[]>('/courses', { active: true });
-  const { data: subtypes, error: subtypeError } = useQuery<Subtype[]>(f.courseId ? `/courses/${f.courseId}/subtypes` : null, { active: true });
+  const { data: courses, error: coursesError, reload: reloadCourses } = useQuery<Course[]>('/courses', { active: true });
   const { data: slots, error: slotError, loading: slotsLoading, reload: reloadSlots } =
     useQuery<TimeSlot[]>(f.courseId ? '/time-slots' : null, { course_id: f.courseId, active: true, include_completed: false });
   const [submitted, setSubmitted] = useState(false);
@@ -46,6 +45,7 @@ export default function Admission() {
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((x) => ({ ...x, [k]: v }));
 
   const course = courses?.find((c) => String(c.id) === f.courseId) ?? null;
+  const subtypes = course?.subtypes ?? (courses ? [] : undefined);
   const selectedSubtypeIds = activeOnly(f.subtypeIds, subtypes);
   const selectedSubtypes = subtypes?.filter((s) => selectedSubtypeIds.includes(s.id)) ?? [];
   const eligible = eligibleTimeSlots(slots, Number(f.courseId), selectedSubtypeIds);
@@ -90,14 +90,15 @@ export default function Admission() {
     if (f.aadhaar && f.aadhaar.replace(/\D/g, '').length !== 12) e.aadhaar = 'Aadhaar must be 12 digits';
     if (!f.courseId) e.courseId = 'Select a course';
     if (!batch) e.batchId = 'Select a compatible batch';
-    if (f.subtypeIds.length && (!subtypes || subtypeError)) e.subtypes = 'Wait for the course subtypes to load';
+    if (f.courseId && coursesError && !course) e.courseId = 'Could not load courses. Retry and select a course.';
+    if (f.subtypeIds.length && !subtypes) e.subtypes = 'Wait for the course subtypes to load';
     if (feePaise > MAX_ADMISSION_FEE_PAISE) e.subtypes = 'The combined subtype fees exceed the maximum admission fee';
     if (planErr) e.plan = planErr;
     if (discount > fee) e.discount = 'Discount can’t exceed the admission fee';
     if (initial > net) e.initial = `Can’t exceed net fee of ${money(net)}`;
     if (initial > 0 && f.mode === 'Bank' && !f.reference.trim()) e.reference = 'UTR / reference is required for bank transfers';
     return e;
-  }, [f, batch, subtypes, subtypeError, discount, fee, feePaise, initial, net, planErr]);
+  }, [f, batch, course, subtypes, coursesError, discount, fee, feePaise, initial, net, planErr]);
   const err = (k: string, server?: string) => (submitted ? errors[k] : undefined) ?? (server ? serverErrors[server] : undefined);
 
 
@@ -199,13 +200,17 @@ export default function Admission() {
                 </div>
               </div>
               <div className="form-grid">
-                <Field label="Course" required error={err('courseId', 'course_id')} htmlFor="course" hint={course ? `${course.duration_months ?? '—'} months · Parent fee ${money(course.fee)}${course.description ? ` · ${course.description}` : ''}` : undefined}>
+                <Field label="Course" required error={err('courseId', 'course_id')} htmlFor="course"
+                  hint={coursesError ? <button type="button" className="btn btn-ghost btn-sm" onClick={reloadCourses}>Could not load courses. Retry</button>
+                    : course ? `${course.duration_months ?? '—'} months · Parent fee ${money(course.fee)}${course.description ? ` · ${course.description}` : ''}` : undefined}>
                   <select id="course" className="select" value={f.courseId} disabled={!!enquiry?.course} onChange={(e) => setF((x) => ({ ...x, courseId: e.target.value, subtypeIds: [], batchId: '' }))}>
                     <option value="">Select course…</option>
                     {courses?.map((c) => <option key={c.id} value={c.id}>{c.code} — {c.name}</option>)}
                   </select>
                 </Field>
-                <SubtypeChecks courseId={f.courseId} value={f.subtypeIds} onChange={changeSubtypes} error={err('subtypes') ?? serverErrors.course_subtype_ids ?? serverErrors.course_subtype_id} />
+                <SubtypeChecks courseId={f.courseId} value={f.subtypeIds} onChange={changeSubtypes}
+                  options={{ data: subtypes, error: coursesError, reload: reloadCourses }}
+                  error={err('subtypes') ?? serverErrors.course_subtype_ids ?? serverErrors.course_subtype_id} />
                 <Field label="Batch" required error={err('batchId', 'time_slot_id')} htmlFor="batch"
                   hint={slotError ? <button type="button" className="btn btn-ghost btn-sm" onClick={reloadSlots}>Could not load time slots. Retry</button>
                     : batch ? `${batch.timing} · ${batch.days}${batch.faculty ? ` · ${batch.faculty}` : ''}`

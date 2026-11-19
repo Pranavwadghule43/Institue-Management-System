@@ -40,7 +40,11 @@ def fmt_time(v: time) -> str:
 
 
 def active_count(db: Session, col, value) -> int:
-    return db.scalar(select(func.count()).where(col == value, Student.status == "Active", Student.deleted_at.is_(None))) or 0
+    return db.scalar(active_count_stmt(col, value)) or 0
+
+
+def active_count_stmt(col, value):
+    return select(func.count()).where(col == value, Student.status == "Active", Student.deleted_at.is_(None))
 
 
 def course_out(c: Course) -> dict:
@@ -91,20 +95,23 @@ def _course_columns(data: dict) -> dict:
 
 @router.get("/courses")
 def list_courses(active: bool | None = None, q: str | None = None, db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)):
-    stmt = select(Course).where(Course.deleted_at.is_(None)).order_by(Course.name)
+    assigned = active_count_stmt(Student.course_id, Course.id).scalar_subquery()
+    slots = select(func.count()).where(TimeSlot.course_id == Course.id, TimeSlot.is_active.is_(True),
+                                       TimeSlot.end_date.is_(None) | (TimeSlot.end_date >= today())).scalar_subquery()
+    stmt = select(Course, assigned, slots, CourseSubtype).outerjoin(
+        CourseSubtype, (CourseSubtype.course_id == Course.id) & CourseSubtype.is_active.is_(True)
+    ).where(Course.deleted_at.is_(None)).order_by(Course.name, Course.id, CourseSubtype.name)
     if active is not None:
         stmt = stmt.where(Course.is_active.is_(active))
     if q:
         stmt = stmt.where(Course.name.ilike(like(q)) | Course.code.ilike(like(q)))
-    courses = db.scalars(stmt).all()
-    students = dict(db.execute(select(Student.course_id, func.count()).where(Student.status == "Active", Student.deleted_at.is_(None)).group_by(Student.course_id)).all())
-    t = today()
-    slots, subtypes = {}, {}
-    for s in db.scalars(select(TimeSlot).where(TimeSlot.is_active.is_(True))):
-        slots[s.course_id] = slots.get(s.course_id, 0) + (slot_status(s, t) != "Completed")
-    for st in db.scalars(select(CourseSubtype).where(CourseSubtype.is_active.is_(True)).order_by(CourseSubtype.name)):
-        subtypes.setdefault(st.course_id, []).append(subtype_ref(st))
-    return [course_out(c) | {"active_students": students.get(c.id, 0), "time_slots": slots.get(c.id, 0), "subtypes": subtypes.get(c.id, [])} for c in courses]
+    courses = {}
+    for course, students, running_slots, subtype in db.execute(stmt):
+        if course.id not in courses:
+            courses[course.id] = course_out(course) | {"active_students": students, "time_slots": running_slots, "subtypes": []}
+        if subtype is not None:
+            courses[course.id]["subtypes"].append(subtype_ref(subtype))
+    return list(courses.values())
 
 
 @router.post("/courses", status_code=201)
@@ -202,10 +209,15 @@ def subtype_out(s: CourseSubtype) -> dict:
 
 @router.get("/courses/{course_id}/subtypes")
 def list_subtypes(course_id: int, active: bool | None = None, db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)):
-    stmt = select(CourseSubtype).where(CourseSubtype.course_id == get_course(db, course_id).id).order_by(CourseSubtype.name)
+    eligible = CourseSubtype.course_id == Course.id
     if active is not None:
-        stmt = stmt.where(CourseSubtype.is_active.is_(active))
-    return [subtype_out(s) for s in db.scalars(stmt)]
+        eligible &= CourseSubtype.is_active.is_(active)
+    stmt = select(CourseSubtype).select_from(Course).outerjoin(CourseSubtype, eligible).where(
+        Course.id == course_id, Course.deleted_at.is_(None)).order_by(CourseSubtype.name)
+    rows = db.scalars(stmt).all()
+    if not rows:
+        raise not_found("course")
+    return [subtype_out(s) for s in rows if s is not None]
 
 
 @router.post("/courses/{course_id}/subtypes", status_code=201)
@@ -324,15 +336,16 @@ def _slot_columns(data: dict) -> dict:
 @router.get("/time-slots")
 def list_slots(course_id: int | None = None, active: bool | None = None, include_completed: bool = True,
                db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)):
-    stmt = select(TimeSlot).options(joinedload(TimeSlot.course), joinedload(TimeSlot.course_subtype)).order_by(TimeSlot.start_time, TimeSlot.name)
+    counts = active_count_stmt(Student.time_slot_id, TimeSlot.id).scalar_subquery()
+    stmt = select(TimeSlot, counts).options(joinedload(TimeSlot.course), joinedload(TimeSlot.course_subtype)).order_by(TimeSlot.start_time, TimeSlot.name)
     if course_id:
         stmt = stmt.where(TimeSlot.course_id == course_id)
     if active is not None:
         stmt = stmt.where(TimeSlot.is_active.is_(active))
-    counts = dict(db.execute(select(Student.time_slot_id, func.count()).where(Student.status == "Active", Student.deleted_at.is_(None)).group_by(Student.time_slot_id)).all())
-    t = today()
-    return [slot_out(s, counts.get(s.id, 0)) | {"course": {"id": s.course.id, "code": s.course.code, "name": s.course.name}}
-            for s in db.scalars(stmt) if include_completed or slot_status(s, t) != "Completed"]
+    if not include_completed:
+        stmt = stmt.where(TimeSlot.end_date.is_(None) | (TimeSlot.end_date >= today()))
+    return [slot_out(s, count) | {"course": {"id": s.course.id, "code": s.course.code, "name": s.course.name}}
+            for s, count in db.execute(stmt)]
 
 
 @router.post("/time-slots", status_code=201)

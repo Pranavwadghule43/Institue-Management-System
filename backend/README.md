@@ -46,6 +46,45 @@ a fifth staff account returns `409 STAFF_ACCOUNT_LIMIT_REACHED`, and disabled st
 
 `IMS_LIVE_DATABASE_URL=<supabase url> pytest tests/test_schema_drift.py` compares `app/models.py` with the live schema (read-only).
 
+## Automatic WhatsApp PDFs
+
+The manual **Open Chat & Save PDF** option is available by default. Enable automatic delivery only after the dedicated
+delivery-table migration is reviewed and applied and the following server-side settings are ready.
+
+| Setting | Value |
+|---|---|
+| `WHATSAPP_ENABLED` | `true` after setup and authorization |
+| `WHATSAPP_ACCESS_TOKEN` | Server-side Meta access token with `whatsapp_business_messaging` for the sending number |
+| `WHATSAPP_PHONE_NUMBER_ID` | Meta Cloud API business phone number ID |
+| `WHATSAPP_GRAPH_VERSION` | Supported Graph API version configured for the Meta app, including the `v` prefix |
+| `WHATSAPP_APP_SECRET` | Meta app secret for callback signature validation |
+| `WHATSAPP_VERIFY_TOKEN` | Private token chosen for the webhook challenge |
+| `WHATSAPP_RECEIPT_TEMPLATE`, `WHATSAPP_BILL_TEMPLATE` | Approved utility templates with a document header and static body text |
+| `WHATSAPP_TEMPLATE_LANGUAGE` | The approved language code shared by both templates |
+| `WHATSAPP_PDF_FONT` | Server path to a TrueType font covering document text. Configure a Devanagari-capable font for Marathi documents. |
+
+Subscribe the WhatsApp Business Account to the `messages` webhook at the API’s HTTPS URL ending in
+`/api/v1/webhooks/whatsapp`. Remove query strings from proxy access logs because Meta sends the verification token in the
+challenge URL. The migration grants table access to its owner. For a dedicated runtime database role, grant only SELECT,
+INSERT and UPDATE with matching RLS policies for that role before activation.
+
+An authorized operator confirms opt-in for the displayed registered number for every attempt. The backend rechecks that number
+and document eligibility, renders the receipt snapshot or paid bill as a PDF in memory, and uploads it to Meta using authenticated
+media upload. IMS uses the approved document-header template for every automatic send, so sending also works outside the
+24-hour customer-service window. Only signed callbacks advance the provider status to sent, delivered or read.
+
+An explicit failure permits a new attempt with confirmed consent. If a send loses its response, the attempt stays pending
+until a signed callback identifies its outcome. Check the attempt against Meta before any manual resend to avoid double delivery.
+
+- [Meta Cloud API](https://developers.facebook.com/documentation/business-messaging/whatsapp/overview)
+- [Meta media template request example](https://www.postman.com/meta/whatsapp-business-platform/request/2qbotrb/send-message-template-media)
+- [Meta message webhook reference](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages)
+- [WhatsApp Business Messaging Policy](https://whatsappbusiness.com/policy/)
+
+For a disposable PostgreSQL back-end benchmark, run `python -m pytest -q -s tests/benchmark_ims.py` from this directory.
+The harness prints medians, p90, SQL statement counts and response bytes. Use request logs to compare wall time with database
+and password/PDF/provider time using the request ID.
+
 ## Layout
 
 ```
@@ -91,7 +130,8 @@ Routers hold both the route and its business rules; there is no separate reposit
 - **Installments**: split keeps the rule of the original UI demo (`admitStudent`) (multiples of 50, last row takes the rest, month-end clamping). Allocation is FIFO and rebuilt after every payment or reversal, so `paid_amount` always equals valid payments.
 - **Idempotency**: `Idempotency-Key` header on fee payments, admissions and bill payments. A replay returns the original with `"replayed": true`.
 - **Dates**: stored UTC, day boundaries in `INSTITUTE_TIMEZONE`.
-- **Never claimed**: WhatsApp is "opened" only. There is no server PDF endpoint: the browser renders the A5 receipt/bill PDFs (`frontend/src/lib/pdf.ts`) or prints them. Backup is history only (no fake trigger). Service cost/profit returns `null` with `pending_cost_rule`.
+- Manual WhatsApp sharing records the chat open. Automatic delivery has its own delivery history and signed statuses. The browser
+  still renders the printable A5 PDFs. Backup shows run history. Service cost and profit report `pending_cost_rule` while the cost rule is pending.
 
 ## Requests for Pranav (schema; nothing was changed by this backend)
 

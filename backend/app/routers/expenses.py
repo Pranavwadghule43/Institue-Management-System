@@ -12,7 +12,7 @@ from ..common import (
 )
 from ..db import get_db
 from ..errors import bad, conflict, not_found
-from ..models import Expense, ExpenseCategory
+from ..models import Expense, ExpenseCategory, User
 from ..security import CurrentUser, get_current_user, require
 
 router = APIRouter(tags=["expenses"])
@@ -90,10 +90,11 @@ def list_expenses(q: str | None = None, period: Literal["today", "month", "90d"]
         stmt = stmt.where(Expense.category_id == category_id)
     if payment_mode:
         stmt = stmt.where(Expense.payment_mode == payment_mode)
-    total = db.scalar(select(func.coalesce(func.sum(stmt.subquery().c.amount), 0)))
-    names = user_names(db, db.scalars(stmt.with_only_columns(Expense.created_by).distinct()))
-    stmt = stmt.options(joinedload(Expense.category)).order_by(Expense.expense_date.desc(), Expense.created_at.desc())
-    return paginate(db, stmt, p, lambda e: expense_out(e, names), total_amount=money(total))
+    count, total = db.execute(stmt.with_only_columns(func.count(), func.coalesce(func.sum(Expense.amount), 0))).one()
+    stmt = stmt.outerjoin(User, User.id == Expense.created_by).add_columns(User.full_name).options(
+        joinedload(Expense.category)).order_by(Expense.expense_date.desc(), Expense.created_at.desc())
+    return paginate(db, stmt, p, lambda row: expense_out(row[0], {row[0].created_by: row[1]} if row[1] is not None else {}),
+                    scalars=False, total_rows=count, total_amount=money(total))
 
 
 @router.get("/expenses/summary")

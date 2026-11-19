@@ -5,12 +5,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
-from ..common import PAY_LABEL, ZERO, bounds, like, money, one_trip, today, user_names, user_ref
+from ..common import PAY_LABEL, ZERO, bounds, like, money, one_trip, today, user_ref
 from ..db import get_db
 from ..ledger import fee_cols, money_dict, series, totals_from, totals_stmts
 from ..models import (
     AuditLog, Customer, Enquiry, Expense, FeeReceipt, ServiceBill, ServiceJob, ServiceJobEvent, ServiceJobStaff, ServicePayment, Student,
-    StudentPayment as P,
+    StudentPayment as P, User,
 )
 from ..security import CurrentUser, get_current_user, me_payload, require
 from .jobs import OPEN, jobs_payload
@@ -37,13 +37,11 @@ def fee_state_count_stmt(states: tuple[str, ...]):
 
 
 def recent_audit(db: Session, limit: int, actor_id: int | None = None) -> list[dict]:
-    stmt = select(AuditLog).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(limit)
+    stmt = select(AuditLog, User.full_name).outerjoin(User, User.id == AuditLog.actor_id).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(limit)
     if actor_id:
         stmt = stmt.where(AuditLog.actor_id == actor_id)
-    rows = db.scalars(stmt).all()
-    names = user_names(db, [a.actor_id for a in rows])
     return [{"at": a.created_at, "action": a.action, "summary": a.summary, "entity_type": a.entity_type, "entity_id": a.entity_id,
-             "by": user_ref(names, a.actor_id)} for a in rows]
+             "by": user_ref({a.actor_id: name} if name is not None else {}, a.actor_id)} for a, name in db.execute(stmt)]
 
 
 @router.get("/dashboard/admin")
@@ -70,7 +68,8 @@ def admin_dashboard(trend_days: int = Query(14, ge=1, le=90), db: Session = Depe
         *totals_stmts(t, t), *totals_stmts(yesterday, yesterday),
     )
     now_, prev = totals_from(*money_today_yesterday[:3]), totals_from(*money_today_yesterday[3:])
-    last = db.execute(select(P, FeeReceipt.receipt_code).join(FeeReceipt, FeeReceipt.payment_id == P.id)
+    last = db.execute(select(P, FeeReceipt.receipt_code, User.full_name).join(FeeReceipt, FeeReceipt.payment_id == P.id)
+                      .outerjoin(User, User.id == P.collected_by)
                       .where(P.status == "Valid", P.received_at >= start, P.received_at < end).order_by(P.received_at.desc()).limit(1)).first()
     jobs = dict(db.execute(select(ServiceJob.status, func.count()).group_by(ServiceJob.status)).all())
     return {
@@ -85,7 +84,7 @@ def admin_dashboard(trend_days: int = Query(14, ge=1, le=90), db: Session = Depe
         "admissions_this_month": admissions_month,
         "overdue_students": overdue_students or 0,
         "last_receipt": None if last is None else {"receipt_no": last[1], "at": last[0].received_at, "amount": money(last[0].amount),
-                                                   "by": user_ref(user_names(db, [last[0].collected_by]), last[0].collected_by)},
+                                                   "by": user_ref({last[0].collected_by: last[2]} if last[2] is not None else {}, last[0].collected_by)},
         "trend": [money_dict(d) for d in series(db, t - timedelta(days=trend_days - 1), t, "day")],
         "service_status_counts": {s: jobs.get(s, 0) for s in ("Pending", "In Process", "On Hold", "Completed", "Cancelled")},
         "service_desk": {

@@ -163,7 +163,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
     paidNote: bill?.payment && bill.paid_at ? `Paid in full by ${bill.payment.mode_label}.` : undefined,
   }), [bill, customer, work, portal, lines, sub, disc, total, inst]);
 
-  const sharePrint: BillPrintData | null = shareBill ? {
+  const sharePrint = useMemo<BillPrintData | null>(() => shareBill ? {
     ...print,
     billNo: shareBill.code, date: shareBill.created_at, customerName: shareBill.customer.name, mobile: shareBill.customer.mobile,
     work: shareBill.job.application_name || shareBill.items.map((item) => item.name).join(', '),
@@ -171,7 +171,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
     subtotal: shareBill.subtotal, discount: shareBill.discount, total: shareBill.grand_total, inst: shareBill.institute,
     status: shareBill.status === 'Paid' ? 'paid' : null,
     paidNote: shareBill.payment ? `Paid in full by ${shareBill.payment.mode_label}.` : undefined,
-  } : null;
+  } : null, [shareBill, print]);
 
   return (
     <>
@@ -338,6 +338,7 @@ function Desk({ bill, initialJob, autoSend }: { bill?: Bill; initialJob: string;
         <WhatsAppSend open onClose={() => setShareBill(null)} title={`Send bill ${shareBill.code}`} name={shareBill.customer.name}
           phone={shareBill.customer.whatsapp_number || shareBill.customer.mobile} recordLabel="customer’s profile"
           message={billMessage(shareBill)} pdf={() => billPdf(sharePrint)}
+          automaticPath={shareBill.status === 'Paid' ? `/service-bills/${shareBill.code}/whatsapp-delivery` : undefined}
           onOpened={() => api(`/service-bills/${shareBill.code}/share-events`, { method: 'POST', body: { event_type: 'WHATSAPP_OPENED' } }).catch(() => {})} />
       )}
 

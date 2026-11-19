@@ -20,6 +20,7 @@ os.environ["FILE_STORAGE_ROOT"] = tempfile.mkdtemp(prefix="ims-files-")
 
 import itertools  # noqa: E402
 from datetime import date, timedelta  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -30,7 +31,7 @@ from app import cli  # noqa: E402
 from app.common import today  # noqa: E402
 from app.db import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Base, User, UserPermission  # noqa: E402
+from app.models import Base, User, UserPermission, WhatsAppDocumentDelivery  # noqa: E402
 from app.routers.admin import ensure_permission_catalog  # noqa: E402
 from app.security import hash_password  # noqa: E402
 
@@ -53,9 +54,14 @@ CREATE TRIGGER ims_account_cap_before_role_update BEFORE UPDATE OF role ON publi
 if engine.url != make_url(TEST_DATABASE_URL):
     raise RuntimeError("IMS test fixtures require their disposable pgserver database.")
 
-Base.metadata.create_all(engine)
+Base.metadata.create_all(engine, tables=[table for table in Base.metadata.sorted_tables if table is not WhatsAppDocumentDelivery.__table__])
 with engine.begin() as c:
     c.execute(text(TRIGGER))
+    c.exec_driver_sql("CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN")
+    c.exec_driver_sql("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE ON TABLES TO anon, authenticated, service_role")
+with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as c:
+    migration = Path(__file__).resolve().parents[1] / "sql" / "2026-11-19_whatsapp_document_deliveries.sql"
+    c.exec_driver_sql(migration.read_text(encoding="utf-8"), execution_options={"no_parameters": True})
 
 TABLES = ", ".join(t.name for t in Base.metadata.sorted_tables)
 PASSWORD = "secret-pass-1"

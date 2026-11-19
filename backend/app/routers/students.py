@@ -16,7 +16,7 @@ from ..common import (
 )
 from ..db import get_db
 from ..errors import AppError, bad, conflict, not_found
-from ..ledger import INSTALLMENT_NO_OFFSET, fee_cols, fee_summary, pct, reallocate
+from ..ledger import INSTALLMENT_NO_OFFSET, fee_cols, fee_summary, pct, reallocate, summarize_installments
 from ..models import (
     Course, CourseSubtype, Enquiry, EnquiryActivity, FeeReceipt, FeeReminderEvent, AuditLog, Student, StudentInstallment, StudentPayment,
     StudentPaymentAllocation,
@@ -201,8 +201,8 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
     s = Student(
         student_code=next_code(db, "STUDENT"), enquiry_id=e.id, full_name=body.full_name, guardian_name=body.guardian_name, dob=body.dob,
         gender=body.gender, mobile=body.mobile, whatsapp_number=body.whatsapp_number or body.mobile, email=body.email, address=body.address,
-        education_qualification=body.education_qualification, remark=body.remark, reference=e.reference, course_id=course.id,
-        course_subtype_id=chosen[0].id if chosen else None, time_slot_id=slot.id, admission_date=t, status="Active", agreed_fee=fee,
+        education_qualification=body.education_qualification, remark=body.remark, reference=e.reference, course=course,
+        course_subtype_id=chosen[0].id if chosen else None, time_slot=slot, admission_date=t, status="Active", agreed_fee=fee,
         discount=body.discount, net_fee=net, created_by=user.id, **aadhaar)
     s.subtypes = chosen
     db.add(s)
@@ -211,22 +211,24 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
         plan = [(0, t, body.paid_now)] + [(k, r.due_date, r.amount) for k, r in enumerate(body.installments if rest > 0 else [], 1)]
     else:
         plan = build_schedule(net, body.paid_now, body.installment_count if rest > 0 else 0, body.first_due_date, t)
-    for no, due, amount in plan:
-        db.add(StudentInstallment(student_id=s.id, installment_no=no + INSTALLMENT_NO_OFFSET, due_date=due, amount=amount, paid_amount=ZERO))
+    installments = [StudentInstallment(student_id=s.id, installment_no=no + INSTALLMENT_NO_OFFSET,
+                                       due_date=due, amount=amount, paid_amount=ZERO) for no, due, amount in plan]
+    db.add_all(installments)
     old = e.status
     e.status, e.handling_staff_id = "Converted", user.id
     db.add(EnquiryActivity(enquiry_id=e.id, actor_id=user.id, old_status=old, new_status="Converted", note=f"Student {s.student_code} created"))
     audit(db, user.id, "ENQUIRY_CONVERTED", "Enquiry", e.enquiry_code, f"{e.enquiry_code} converted to {s.student_code}")
     audit(db, user.id, "STUDENT_CREATED", "Student", s.student_code, f"Admission confirmed - {s.full_name} ({course.code})",
           after={"net_fee": money(net), "paid_now": money(body.paid_now), "installments": len(plan) - 1})
-    db.flush()
-    db.refresh(s)
     warn = capacity_warning(db, slot)
     payment = receipt = None
     if body.paid_now > 0:
-        payment, receipt = record_payment(db, s, body.paid_now, body.payment_mode, body.payment_reference, "Admission payment", user, idempotency_key)
+        payment, receipt, fees = record_payment(db, s, body.paid_now, body.payment_mode, body.payment_reference, "Admission payment", user,
+                                                idempotency_key, new_installments=installments)
+    else:
+        fees = summarize_installments(s, t, installments)
     db.commit()
-    return {"student": student_out(s), "fees": fee_summary(db, s, today()), "capacity_warning": warn,
+    return {"student": student_out(s), "fees": fees, "capacity_warning": warn,
             "payment": payment_out(payment, receipt.receipt_code, s, {user.id: user.full_name}) if payment else None,
             "receipt": receipt_out(receipt, payment, s) if receipt else None, "replayed": False}
 
@@ -263,9 +265,11 @@ def student_out(s: Student) -> dict:
     }
 
 
-def get_student(db: Session, code: str, lock: bool = False, archived_ok: bool = False) -> Student:
+def get_student(db: Session, code: str, lock: bool = False, archived_ok: bool = False, *, detail: bool = False) -> Student:
     stmt = select(Student).where(Student.student_code == code)
-    s = db.scalars(stmt.with_for_update() if lock else stmt).first()
+    if detail:
+        stmt = stmt.options(joinedload(Student.course), joinedload(Student.time_slot), joinedload(Student.subtypes))
+    s = db.scalars(stmt.with_for_update(of=Student) if lock else stmt).unique().first()
     if s is None or (s.deleted_at is not None and not archived_ok):
         raise not_found("student")
     return s
@@ -296,7 +300,7 @@ def list_students(q: str | None = None, course_id: int | None = None, time_slot_
     t = today()
     f = fee_cols(t)
     stmt = f.join(select(Student, f.paid, f.balance, f.next_due, f.next_remaining, f.state)).options(
-        joinedload(Student.course), joinedload(Student.time_slot), joinedload(Student.subtype))
+        joinedload(Student.course), joinedload(Student.time_slot))
     if not include_archived:
         stmt = stmt.where(Student.deleted_at.is_(None))
     if q:
@@ -310,8 +314,9 @@ def list_students(q: str | None = None, course_id: int | None = None, time_slot_
     if fee_status:
         stmt = stmt.where(f.state != "Fully Paid" if fee_status == "Pending" else f.state == fee_status)
     stmt = stmt.order_by(Student.created_at.desc(), Student.id.desc())
-    counts = {"total": db.scalar(select(func.count()).where(Student.deleted_at.is_(None))),
-              "active": db.scalar(select(func.count()).where(Student.deleted_at.is_(None), Student.status == "Active"))}
+    total, active = db.execute(select(func.count(), func.count().filter(Student.status == "Active"))
+                               .where(Student.deleted_at.is_(None))).one()
+    counts = {"total": total, "active": active}
     return paginate(db, stmt, p, lambda r: {
         "code": r[0].student_code, "full_name": r[0].full_name, "guardian_name": r[0].guardian_name, "mobile": r[0].mobile,
         "whatsapp_number": r[0].whatsapp_number or r[0].mobile,
@@ -324,34 +329,33 @@ def list_students(q: str | None = None, course_id: int | None = None, time_slot_
 
 @router.get("/students/{code}")
 def get_student_api(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(require("students.view"))):
-    return student_out(get_student(db, code, archived_ok=True))
+    return student_out(get_student(db, code, archived_ok=True, detail=True))
 
 
 @router.get("/students/{code}/profile")
 def student_profile(code: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("students.view"))):
-    s = get_student(db, code, archived_ok=True)
-    rows = db.execute(select(StudentPayment, FeeReceipt).outerjoin(FeeReceipt, FeeReceipt.payment_id == StudentPayment.id)
-                      .where(StudentPayment.student_id == s.id).order_by(StudentPayment.received_at.desc())).all()
+    s = get_student(db, code, archived_ok=True, detail=True)
+    can_view_fees = user.can("fees.view")
+    rows = db.execute(select(StudentPayment, FeeReceipt.receipt_code, FeeReceipt.issued_at).outerjoin(FeeReceipt, FeeReceipt.payment_id == StudentPayment.id)
+                      .where(StudentPayment.student_id == s.id).order_by(StudentPayment.received_at.desc())).all() if can_view_fees else []
     reminders = db.scalars(select(FeeReminderEvent).where(FeeReminderEvent.student_id == s.id).order_by(FeeReminderEvent.opened_at.desc())).all()
     events = db.scalars(select(AuditLog).where(AuditLog.entity_type == "Student", AuditLog.entity_id == s.student_code)).all()
-    names = user_names(db, [x.collected_by for x, _ in rows] + [x.reversed_by for x, _ in rows] + [r.opened_by for r in reminders] + [a.actor_id for a in events])
-    payments = [payment_out(x, r.receipt_code if r else None, s, names) for x, r in rows]
+    names = user_names(db, [x.collected_by for x, _, _ in rows] + [x.reversed_by for x, _, _ in rows] + [r.opened_by for r in reminders] + [a.actor_id for a in events])
+    payments = [payment_out(x, receipt, s, names) for x, receipt, _ in rows[:20]]
     activity = (
         [{"at": x.received_at, "type": "payment", "title": f"Fee received · {money(x.amount)} ({x.payment_mode})", "by": user_ref(names, x.collected_by),
-          "ref": r.receipt_code if r else None} for x, r in rows]
+          "ref": receipt} for x, receipt, _ in rows]
         + [{"at": x.reversed_at, "type": "reversal", "title": f"Payment reversed · {money(x.amount)}", "by": user_ref(names, x.reversed_by),
-            "ref": r.receipt_code if r else None, "note": x.reversal_reason} for x, r in rows if x.status == "Reversed"]
+            "ref": receipt, "note": x.reversal_reason} for x, receipt, _ in rows if x.status == "Reversed"]
         + [{"at": e.opened_at, "type": "reminder", "title": "WhatsApp fee reminder opened", "by": user_ref(names, e.opened_by), "note": e.note} for e in reminders]
         + [{"at": a.created_at, "type": "change", "title": a.summary, "action": a.action, "by": user_ref(names, a.actor_id), "note": a.reason} for a in events]
     )
-    if not user.can("fees.view"):  # QA-06: no payment amounts for users who can't see fees
-        activity = [a for a in activity if a["type"] not in ("payment", "reversal")]
     activity.sort(key=lambda a: a["at"], reverse=True)
-    fees = fee_summary(db, s, today()) if user.can("fees.view") else None
-    last = db.scalar(select(func.max(FeeReminderEvent.opened_at)).where(FeeReminderEvent.student_id == s.id))
-    return {"student": student_out(s), "fees": fees, "payments": payments[:20] if fees else [],
-            "receipts": [{"receipt_no": r.receipt_code, "issued_at": r.issued_at, "amount": money(x.amount)} for x, r in rows if r and x.status == "Valid"] if fees else [],
-            "last_reminded_at": last, "activity": activity}
+    fees = fee_summary(db, s, today()) if can_view_fees else None
+    return {"student": student_out(s), "fees": fees, "payments": payments,
+            "receipts": [{"receipt_no": receipt, "issued_at": issued, "amount": money(x.amount)}
+                         for x, receipt, issued in rows if receipt and x.status == "Valid"],
+            "last_reminded_at": reminders[0].opened_at if reminders else None, "activity": activity}
 
 
 # ----------------------------------------------------------------- edit / status / archive / time slot

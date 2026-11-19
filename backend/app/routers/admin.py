@@ -51,13 +51,13 @@ def staff_out(u: User) -> dict:
 
 
 def account_limit(db: Session) -> dict:
-    lim = db.get(AccountLimit, 1)
-    max_staff = lim.max_staff if lim else 4
     # Disabled accounts still count: deactivation does not free a slot (approved rule). Removed accounts
     # (deleted_at set) don't count - removing is how a slot is freed. Same rule as ims_enforce_user_account_limit.
-    current = User.deleted_at.is_(None)
-    used = db.scalar(select(func.count()).where(User.role == "STAFF", current)) or 0
-    return {"admin_accounts": db.scalar(select(func.count()).where(User.role == "ADMIN", current)) or 0, "staff_used": used,
+    limit = select(AccountLimit.max_staff).where(AccountLimit.id == 1).scalar_subquery()
+    admins, used, max_staff = db.execute(select(
+        func.count().filter(User.role == "ADMIN"), func.count().filter(User.role == "STAFF"), func.coalesce(limit, 4)
+    ).where(User.deleted_at.is_(None))).one()
+    return {"admin_accounts": admins, "staff_used": used,
             "staff_limit": max_staff, "staff_remaining": max(0, max_staff - used)}
 
 

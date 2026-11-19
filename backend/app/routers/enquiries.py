@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Header
 from pydantic import Field
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, aliased, joinedload, selectinload
 
 from ..common import (
     In, Mobile, OptAadhaar, OptEmail, OptStr, OptText, Paging, Str, aadhaar_columns, aadhaar_decrypt, aadhaar_mask, apply_changes, audit,
@@ -13,7 +13,7 @@ from ..common import (
 )
 from ..db import get_db
 from ..errors import conflict, not_found
-from ..models import Course, Enquiry, EnquiryActivity, Student, User
+from ..models import Enquiry, EnquiryActivity, Student, User
 from ..security import CurrentUser, require, require_admin
 from .students import AdmissionIn, admit, check_subtypes, subtypes_out, wanted_subtypes
 
@@ -59,7 +59,7 @@ def enquiry_out(db: Session, e: Enquiry, names: dict | None = None, student_code
     names = names if names is not None else user_names(db, [e.handling_staff_id, e.created_by])
     student_code = (student_codes.get(e.id) if student_codes is not None
                     else db.scalar(select(Student.student_code).where(Student.enquiry_id == e.id)))
-    c = db.get(Course, e.course_id) if e.course_id else None
+    c = e.course
     return {"code": e.enquiry_code, "student_name": e.student_name, "guardian_name": e.guardian_name, "mobile": e.mobile, "email": e.email,
             "address": e.address, "reference": e.reference, "aadhaar_masked": aadhaar_mask(e.aadhaar_last4),
             "course": {"id": c.id, "code": c.code, "name": c.name} if c else None, "course_subtype": subtypes_out(e.subtypes[:1])[0] if e.subtypes else None,
@@ -73,7 +73,13 @@ def enquiry_out(db: Session, e: Enquiry, names: dict | None = None, student_code
 def list_enquiries(q: str | None = None, status: Literal["New", "Pending", "Follow-Up", "Converted"] | None = None,
                    created_from: date | None = None, created_to: date | None = None, staff_id: int | None = None,
                    p: Paging = Depends(paging), db: Session = Depends(get_db), _: CurrentUser = Depends(require("students.view"))):
-    stmt = select(Enquiry).options(selectinload(Enquiry.subtypes)).order_by(Enquiry.created_at.desc(), Enquiry.id.desc())
+    handler, creator = aliased(User), aliased(User)
+    stmt = (select(Enquiry, Student.student_code, handler.full_name, creator.full_name)
+            .outerjoin(Student, Student.enquiry_id == Enquiry.id)
+            .outerjoin(handler, handler.id == Enquiry.handling_staff_id)
+            .outerjoin(creator, creator.id == Enquiry.created_by)
+            .options(joinedload(Enquiry.course), selectinload(Enquiry.subtypes))
+            .order_by(Enquiry.created_at.desc(), Enquiry.id.desc()))
     if q:
         stmt = stmt.where(or_(Enquiry.enquiry_code.ilike(like(q)), Enquiry.student_name.ilike(like(q)), Enquiry.mobile.like(like(q.replace(" ", "")))))
     if status:
@@ -83,17 +89,13 @@ def list_enquiries(q: str | None = None, status: Literal["New", "Pending", "Foll
         stmt = stmt.where(Enquiry.created_at >= start, Enquiry.created_at < end)
     if staff_id:
         stmt = stmt.where(Enquiry.handling_staff_id == staff_id)
-    names = dict(db.execute(select(User.id, User.full_name)).all())
-    codes: dict[int, str] = {}
-    held: list = []  # the session only remembers objects something still references
+    def present(row):
+        enquiry, student_code, handled_by, created_by = row
+        names = {uid: name for uid, name in (
+            (enquiry.handling_staff_id, handled_by), (enquiry.created_by, created_by)) if name is not None}
+        return enquiry_out(db, enquiry, names, {enquiry.id: student_code})
 
-    def prefetch(rows):
-        # Whole page in 3 queries instead of 2 per row (N+1). Loaded courses/subtypes stay in the session (held), so
-        # the db.get() calls in enquiry_out find them without another query; student codes are passed in.
-        if ids := {e.course_id for e in rows if e.course_id}:
-            held.extend(db.scalars(select(Course).where(Course.id.in_(ids))).all())
-        codes.update(db.execute(select(Student.enquiry_id, Student.student_code).where(Student.enquiry_id.in_([e.id for e in rows]))).all())
-    return paginate(db, stmt, p, lambda e: enquiry_out(db, e, names, codes), prefetch=prefetch)
+    return paginate(db, stmt, p, present, scalars=False)
 
 
 @router.get("/summary")

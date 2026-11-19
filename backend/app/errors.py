@@ -114,5 +114,6 @@ def install(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, e: Exception):
-        log_failure(log, f"unhandled error on {request.method} {request.url.path}", e)
+        route = getattr(request.scope.get("route"), "path", "<unmatched>")
+        log_failure(log, f"unhandled error on {request.method} {route}", e)
         return JSONResponse(_body("INTERNAL_ERROR", "Something went wrong. Please try again."), status_code=500)

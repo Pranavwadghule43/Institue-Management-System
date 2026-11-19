@@ -153,6 +153,7 @@ export function ReceiptView() {
         recordLabel="student’s profile"
         message={receiptMessage(s)}
         pdf={() => receiptPdf(r)}
+        automaticPath={r.status === 'Valid' ? `/receipts/${r.receipt_no}/whatsapp-delivery` : undefined}
         onOpened={() => {
           api(`/receipts/${r.receipt_no}/share-events`, { method: 'POST', body: { event_type: 'WHATSAPP_OPENED' } }).catch(() => {});
           toast('success', 'WhatsApp opened', `Receipt ready to send to ${s.student.name}`);

@@ -13,7 +13,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Query
 from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -180,9 +180,11 @@ def paging(page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100))
     return Paging(page, page_size)
 
 
-def paginate(db: Session, stmt, p: Paging, fn, scalars: bool = True, prefetch=None, **extra) -> dict:
+def paginate(db: Session, stmt, p: Paging, fn, scalars: bool = True, prefetch=None, *, total_rows: int | None = None, **extra) -> dict:
     """prefetch(rows), if given, loads whatever fn needs for the whole page in a few batched queries (avoids N+1)."""
-    total = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery())) or 0
+    total = total_rows
+    if total is None:
+        total = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery())) or 0
     res = db.execute(stmt.limit(p.page_size).offset((p.page - 1) * p.page_size))
     rows = res.scalars().all() if scalars else res.all()
     if prefetch and rows:
@@ -220,10 +222,15 @@ _CATEGORY_RULES = [("Deleted", r"DELETED|REVERSED|CANCELLED|ARCHIVED"), ("Securi
 
 def audit(db: Session, actor_id: int | None, action: str, entity_type: str, entity_id: str | None, summary: str,
           before: dict | None = None, after: dict | None = None, reason: str | None = None) -> None:
+    db.add(AuditLog(**audit_values(actor_id, action, entity_type, entity_id, summary, before, after, reason)))
+
+
+def audit_values(actor_id: int | None, action: str, entity_type: str, entity_id: str | None, summary: str,
+                 before: dict | None = None, after: dict | None = None, reason: str | None = None) -> dict:
     category = next((c for c, rx in _CATEGORY_RULES if re.search(rx, action)), "Business")
     ip, ua = request_ctx.get()
-    db.add(AuditLog(actor_id=actor_id, category=category, action=action, entity_type=entity_type, entity_id=entity_id,
-                    summary=summary, before_data=before, after_data=after, reason=reason, ip_address=ip, user_agent=ua))
+    return dict(actor_id=actor_id, category=category, action=action, entity_type=entity_type, entity_id=entity_id,
+                summary=summary, before_data=before, after_data=after, reason=reason, ip_address=ip, user_agent=ua)
 
 
 # ----------------------------------------------------------------- numbering
@@ -244,30 +251,19 @@ def institute(db: Session) -> InstituteSettings:
 
 
 def next_code(db: Session, kind: str) -> str:
-    """Atomic, concurrency-safe public ID. The sequence row stays locked until the caller commits.
-
-    ponytail: a missing (kind, period) row starts at 1; pre-seed number_sequences to start elsewhere
-    (e.g. RCP at 1201) - starting values are still an open product decision.
-    """
+    """Reserve the current number in the caller's transaction, starting missing sequences at 1."""
     prefix, yearly, width = SEQUENCES[kind]
     period = str(today().year) if yearly else "GLOBAL"
-    where = (NumberSequence.entity_type == kind, NumberSequence.period_key == period)
-    row = db.scalars(select(NumberSequence).where(*where).with_for_update()).first()
-    if row is None:
-        try:
-            with db.begin_nested():
-                db.add(NumberSequence(entity_type=kind, period_key=period, next_value=1, prefix=prefix, width=width))
-        except IntegrityError:
-            pass  # another request created it first
-        row = db.scalars(select(NumberSequence).where(*where).with_for_update()).one()
-    n, row.next_value = row.next_value, row.next_value + 1
+    stmt = insert(NumberSequence).values(entity_type=kind, period_key=period, next_value=2, prefix=prefix, width=width)
+    n, prefix, width = db.execute(stmt.on_conflict_do_update(
+        index_elements=[NumberSequence.entity_type, NumberSequence.period_key],
+        set_={"next_value": NumberSequence.next_value + 1},
+    ).returning(NumberSequence.next_value - 1, NumberSequence.prefix, NumberSequence.width)).one()
     if kind == "RECEIPT":
         prefix = institute(db).fee_receipt_prefix
     elif kind == "BILL":
         prefix = institute(db).service_bill_prefix
-    else:
-        prefix = row.prefix
-    return f"{prefix}-{period}-{n:0{row.width}d}" if yearly else f"{prefix}-{n:0{row.width}d}"
+    return f"{prefix}-{period}-{n:0{width}d}" if yearly else f"{prefix}-{n:0{width}d}"
 
 
 # ----------------------------------------------------------------- Aadhaar (keys agreed with the security developer)

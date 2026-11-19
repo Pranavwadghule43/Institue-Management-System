@@ -1,4 +1,4 @@
-"""ORM mirror of the approved IMS schema (36 tables, owned by the DB lead).
+"""ORM definitions for the IMS PostgreSQL schema.
 
 Never call metadata.create_all() against the shared database. Tests use it on a
 throwaway local Postgres only. tests/test_schema_drift.py checks these models
@@ -6,10 +6,11 @@ against the live schema.
 """
 from datetime import date, datetime, time
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import (
     JSON, BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint, Identity, Index, Integer,
-    LargeBinary, Numeric, SmallInteger, String, Text, Time, UniqueConstraint, func, text,
+    LargeBinary, Numeric, SmallInteger, String, Text, Time, UniqueConstraint, Uuid, func, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -20,6 +21,29 @@ JSONDOC = JSON().with_variant(JSONB(), "postgresql")
 
 class Base(DeclarativeBase):
     pass
+
+
+class WhatsAppDocumentDelivery(Base):
+    __tablename__ = "whatsapp_document_deliveries"
+    __table_args__ = (
+        CheckConstraint("document_type IN ('receipt', 'bill')", name="whatsapp_delivery_document_type"),
+        CheckConstraint("status IN ('pending', 'submitted', 'sent', 'delivered', 'read', 'failed')", name="whatsapp_delivery_status"),
+        CheckConstraint("recipient ~ '^[1-9][0-9]{7,14}$'", name="whatsapp_delivery_recipient"),
+        Index("whatsapp_delivery_active_doc", "document_type", "document_code", unique=True, postgresql_where=text("status <> 'failed'")),
+        Index("whatsapp_delivery_history", "document_type", "document_code", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    document_type: Mapped[str] = mapped_column(String(12))
+    document_code: Mapped[str] = mapped_column(String(40))
+    recipient: Mapped[str] = mapped_column(String(15))
+    consent_by: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    provider_timestamp: Mapped[int | None] = mapped_column(BigInteger)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    status: Mapped[str] = mapped_column(String(12))
+    result_code: Mapped[str | None] = mapped_column(String(50))
 
 
 def pk():
@@ -248,6 +272,7 @@ class Enquiry(Base):
     created_at: Mapped[datetime] = created()
     updated_at: Mapped[datetime] = updated()
 
+    course: Mapped[Course | None] = relationship()
     subtypes: Mapped[list[CourseSubtype]] = relationship(secondary="enquiry_course_subtypes", order_by="CourseSubtype.id")
 
 

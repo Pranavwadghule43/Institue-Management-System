@@ -1,5 +1,6 @@
 from zoneinfo import ZoneInfo
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +25,16 @@ class Settings(BaseSettings):
     login_lock_minutes: int = 15
     aadhaar_enc_key: str | None = None  # Fernet key (urlsafe base64, 32 bytes)
     aadhaar_hash_key: str | None = None  # HMAC key for exact-match Aadhaar search
+    whatsapp_enabled: bool = False
+    whatsapp_access_token: SecretStr = SecretStr("")
+    whatsapp_app_secret: SecretStr = SecretStr("")
+    whatsapp_verify_token: SecretStr = SecretStr("")
+    whatsapp_phone_number_id: str = ""
+    whatsapp_graph_version: str = ""
+    whatsapp_receipt_template: str = ""
+    whatsapp_bill_template: str = ""
+    whatsapp_template_language: str = "en"
+    whatsapp_pdf_font: str = ""
 
     @property
     def production(self) -> bool:

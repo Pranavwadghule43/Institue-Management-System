@@ -224,5 +224,18 @@ export function billPrintData(b: Bill, portal: { user?: string; pass?: string } 
   };
 }
 
-export const receiptPdf = (r: Receipt) => docToPdf(<FeeReceiptPrint r={receiptPrintData(r)} />, `Receipt-${r.receipt_no}.pdf`);
-export const billPdf = (b: BillPrintData) => docToPdf(<ServiceBillPrint b={b} />, `Bill-${b.billNo}.pdf`);
+const documentFiles = new WeakMap<Receipt | BillPrintData, Promise<File>>();
+
+function renderDocument(data: Receipt | BillPrintData, node: ReactNode, filename: string) {
+  const existing = documentFiles.get(data);
+  if (existing) return existing;
+  const pending = docToPdf(node, filename).catch((error: unknown) => {
+    documentFiles.delete(data);
+    throw error;
+  });
+  documentFiles.set(data, pending);
+  return pending;
+}
+
+export const receiptPdf = (r: Receipt) => renderDocument(r, <FeeReceiptPrint r={receiptPrintData(r)} />, `Receipt-${r.receipt_no}.pdf`);
+export const billPdf = (b: BillPrintData) => renderDocument(b, <ServiceBillPrint b={b} />, `Bill-${b.billNo}.pdf`);

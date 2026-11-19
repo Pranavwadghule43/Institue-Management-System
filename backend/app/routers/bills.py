@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Header
 from pydantic import Field
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ..common import (
     PAY_LABEL, ZERO, In, Money, OptStr, Paging, PayMode, Reason, Str, amount_in_words, audit, bounds, institute, like, money, next_code,
@@ -47,9 +47,11 @@ class CancelIn(In):
     reason: Reason
 
 
-def get_bill(db: Session, code: str, lock: bool = False) -> ServiceBill:
+def get_bill(db: Session, code: str, lock: bool = False, *, detail: bool = False) -> ServiceBill:
     stmt = select(ServiceBill).where(ServiceBill.bill_code == code)
-    b = db.scalars(stmt.with_for_update() if lock else stmt).first()
+    if detail:
+        stmt = stmt.options(joinedload(ServiceBill.customer), joinedload(ServiceBill.job), joinedload(ServiceBill.items))
+    b = db.scalars(stmt.with_for_update(of=ServiceBill) if lock else stmt).unique().first()
     if b is None:
         raise not_found("bill")
     return b
@@ -167,7 +169,7 @@ def create_bill(body: BillIn, db: Session = Depends(get_db), user: CurrentUser =
 @router.get("/{code}")
 @router.get("/{code}/print-data")
 def get_bill_api(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(require("service_bill.create"))):
-    return bill_out(db, get_bill(db, code))
+    return bill_out(db, get_bill(db, code, detail=True))
 
 
 @router.patch("/{code}")
