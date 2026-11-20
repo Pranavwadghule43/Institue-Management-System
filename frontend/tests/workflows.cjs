@@ -74,3 +74,34 @@ test('installment splitting and comparisons retain paise', () => {
   assert.equal(planError(rows, 7250.15, '2026-11-19'), null);
   assert.equal(planError([{ due: '2026-12-01', amount: 0.1 }, { due: '2026-12-02', amount: 0.2 }], 0.3, '2026-11-19'), null);
 });
+
+const { rebalance } = loadSource('src/components/PlanEditor.tsx');
+
+test('20 Nov: typing one installment works out the ones after it', () => {
+  // Fee 5000, paid 1000 today → 4000 over 3 installments; first set to 1500 → 1250 + 1250.
+  let rows = evenPlan(3, '2026-12-10', 4000);
+  assert.deepEqual(rows.map((r) => r.amount), [1300, 1300, 1400]);
+  rows = rebalance(rows.map((r, i) => (i === 0 ? { ...r, amount: 1500, fixed: true } : r)), 4000, 0);
+  assert.deepEqual(rows.map((r) => r.amount), [1500, 1250, 1250]);
+  assert.equal(planError(rows, 4000, '2026-11-20'), null);
+  // Then the second one by hand → only the third changes; the first stays as typed.
+  rows = rebalance(rows.map((r, i) => (i === 1 ? { ...r, amount: 2000, fixed: true } : r)), 4000, 1);
+  assert.deepEqual(rows.map((r) => r.amount), [1500, 2000, 500]);
+  // Editing the last one, with nothing free after it, moves the difference to the free rows before it.
+  let back = evenPlan(3, '2026-12-10', 4000);
+  back = rebalance(back.map((r, i) => (i === 2 ? { ...r, amount: 1000, fixed: true } : r)), 4000, 2);
+  assert.deepEqual(back.map((r) => r.amount), [1500, 1500, 1000]);
+  // Initial payment changes to 2000 (balance 3000): rows typed by hand stay, the free one is worked out again.
+  const after = rebalance(rows, 3000);
+  assert.deepEqual(after.map((r) => r.amount), [1500, 2000, '']);
+  assert.match(planError(after, 3000, '2026-11-20'), /more than/);
+  assert.match(planError([{ due: '2026-12-10', amount: 3000 }, { due: '2027-01-10', amount: '' }], 3000, '2026-11-20'), /remove the empty installment/);
+  // Nothing free to absorb a change: the plan is left as it is and the error explains it.
+  const allFixed = rows.map((r) => ({ ...r, fixed: true }));
+  assert.equal(rebalance(allFixed, 3500), allFixed);
+  // Already adds up: nothing moves.
+  assert.equal(rebalance(rows, 4000), rows);
+  // Paise and odd balances keep the exact total.
+  const odd = rebalance(evenPlan(3, '2026-12-10', 1000.15).map((r, i) => (i === 0 ? { ...r, amount: 333, fixed: true } : r)), 1000.15, 0);
+  assert.equal(odd.reduce((t, r) => t + Math.round(Number(r.amount) * 100), 0), 100015);
+});

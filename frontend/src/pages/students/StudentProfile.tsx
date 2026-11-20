@@ -445,7 +445,8 @@ function EditPlan({ open, s, fees, onClose }: { open: boolean; s: Student; fees:
           Total fee stays {money(fees.net_fee)}; {money(fees.total_paid)} already received stays as it is.
           {settled.length > 0 && ` ${settled.length === 1 ? 'Installment 1 keeps' : `Installments 1–${settled.length} keep`} what was paid on ${settled.length === 1 ? 'it' : 'them'}.`}
         </p>
-        <PlanEditor rows={rows} onChange={setRows} balance={balance} minDate={s.admission_date} startNo={settled.length + 1} error={(tried && problem) || serverErr || null} />
+        <PlanEditor rows={rows} onChange={setRows} balance={balance} minDate={s.admission_date} startNo={settled.length + 1} error={(tried && problem) || serverErr || null}
+          paidFirst={{ label: 'Already received', amount: n(fees.total_paid), note: 'stays as it is' }} />
         <Field label="Reason" hint="Saved in the audit log" htmlFor="ep-r"><textarea id="ep-r" className="textarea" placeholder="e.g. Parent asked to pay on the 10th" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
       </div>
     </Drawer>

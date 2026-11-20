@@ -7,7 +7,7 @@ import { api, newKey, useQuery, write } from '../../api/client';
 import type { Course, Enquiry, FeeSummary, PayMode, Receipt, Student, TimeSlot } from '../../api/types';
 import { date, iso, money, toPaise } from '../../lib/format';
 import { PayModePicker } from '../../components/PayModePicker';
-import { PlanEditor, evenPlan, planError, type PlanRow } from '../../components/PlanEditor';
+import { PlanEditor, evenPlan, planError, rebalance, type PlanRow } from '../../components/PlanEditor';
 import { SubtypeChecks, activeOnly } from '../../components/SubtypeChecks';
 import { eligibleTimeSlots } from '../../lib/schedule';
 import { admissionPrice, MAX_ADMISSION_FEE_PAISE } from '../../lib/admissionPricing';
@@ -68,11 +68,15 @@ export default function Admission() {
   const todayIso = iso(new Date());
   // 16 Nov (client): dates and amounts can be set by hand. "Number of installments" + "First due date" fill the
   // table with an even monthly split; any row can then be changed. Hand edits stay until those two are changed.
+  // 20 Nov (client): the initial payment comes first. If it (or the fee/discount) changes after hand edits,
+  // the amounts not typed by hand are worked out again so the plan still adds up to the balance.
   const [plan, setPlan] = useState<PlanRow[]>([]);
   const [handSet, setHandSet] = useState(false);
   useEffect(() => {
-    if (!handSet) setPlan(evenPlan(f.installments, f.firstDue, balance));
-  }, [f.installments, f.firstDue, balance, handSet]);
+    setPlan((current) => (handSet && current.length ? rebalance(current, balance) : evenPlan(f.installments, f.firstDue, balance)));
+    // Only these three re-plan; a hand edit itself must not (it would refill a box while it is being typed in).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [f.installments, f.firstDue, balance]);
   const planErr = balance > 0 ? planError(plan, balance, todayIso) : null;
 
   const errors = useMemo(() => {
@@ -278,6 +282,7 @@ export default function Admission() {
                   <div className={`field span-2 ${err('plan', 'installments') ? 'has-error' : ''}`} style={{ gridColumn: '1 / -1' }}>
                     <span className="field__label">Installment dates and amounts <span className="muted" style={{ fontWeight: 400 }}>— change any date or amount</span></span>
                     <PlanEditor rows={plan} balance={balance} minDate={todayIso} error={err('plan', 'installments')}
+                      paidFirst={{ label: 'Initial payment', amount: initial, note: `paid today · ${f.mode}` }}
                       onChange={(rows) => { setHandSet(true); setPlan(rows); }} />
                   </div>
                 )}
@@ -323,6 +328,15 @@ export default function Admission() {
                     <span className="muted" style={{ fontSize: 12 }}>{plan.length} {plan.length === 1 ? 'installment' : 'installments'}</span>
                   </div>
                   <div className="timeline">
+                    {initial > 0 && (
+                      <div className="tl-item" style={{ paddingBottom: 10 }}>
+                        <span className="tl-item__dot success" style={{ fontSize: 9, fontWeight: 700 }}>✓</span>
+                        <div className="row-between">
+                          <span style={{ fontSize: 13 }}>Today · initial payment</span>
+                          <strong className="num" style={{ fontSize: 13, color: 'var(--success-700)' }}>{money(initial)}</strong>
+                        </div>
+                      </div>
+                    )}
                     {plan.map((r, i) => (
                       <div className="tl-item" key={i} style={{ paddingBottom: 10 }}>
                         <span className="tl-item__dot primary" style={{ fontSize: 9, fontWeight: 700 }}>{i + 1}</span>

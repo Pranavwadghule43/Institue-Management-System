@@ -2084,6 +2084,15 @@ html[data-theme='dark'] .toast {
 .plan-editor__table .input, .plan-editor__table .input-group { min-width: 0; width: 100%; }
 .plan-editor__foot { padding: 8px 10px; border-top: 1px solid var(--line); background: var(--surface-2); gap: 12px; flex-wrap: wrap; }
 .plan-editor > .field__error { padding: 0 10px 10px; margin: 0; }
+.plan-editor__hint { font-size: 12px; margin: 0; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.plan-editor__paid td { background: var(--success-50, #f0fdf4); font-size: 13px; }
+.plan-editor__tag { display: block; font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+@media (max-width: 560px) {
+  .plan-editor__table th, .plan-editor__table td { padding: 6px; }
+  .plan-editor__table td:nth-child(3) { min-width: 118px; }
+  .plan-editor__table input[type=date] { padding-inline: 6px; font-size: 13px; }
+}
+.link-btn { background: none; border: 0; padding: 0; color: var(--primary-700); text-decoration: underline; cursor: pointer; font: inherit; }
 
 /* Sub-type checkboxes (enquiry, admission, edit student) */
 .subtype-checks { border: 0; padding: 0; margin: 0; min-width: 0; }
