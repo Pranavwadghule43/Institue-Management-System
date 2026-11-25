@@ -1,4 +1,5 @@
-"""Sprint Day 3 (30 Oct 2026) acceptance checks: search permissions, Aadhaar reveal audit, live alert counts, audit fields, staff matrix.
+"""Sprint Day 3 (30 Oct 2026) acceptance checks: search permissions, live alert counts, audit fields, staff matrix.
+(25 Nov 2026: the Aadhaar masking / reveal checks were replaced by checks that Aadhaar is no longer stored or revealed.)
 
 Task IDs from IMS_Dhruvank_3_Day_Consolidated_Work_Plan_28_to_30_Oct_2026.md. Each test is the evidence for its task.
 """
@@ -11,13 +12,12 @@ from app.common import today
 from app.db import engine
 from conftest import admission_body, ok
 
-AADHAAR = "234567890123"
 
 
 @pytest.fixture
 def world(admin, course, catalog, job):
-    """One student with Aadhaar and an overdue installment, one unpaid bill, one receipt."""
-    e = ok(admin.post("/enquiries", json={"student_name": "Meera Joshi", "mobile": "9876500011", "course_id": course["id"], "aadhaar": AADHAAR}), 201)
+    """One student with an overdue installment, one unpaid bill, one receipt."""
+    e = ok(admin.post("/enquiries", json={"student_name": "Meera Joshi", "mobile": "9876500011", "course_id": course["id"]}), 201)
     s = ok(admin.post(f"/enquiries/{e['code']}/convert", json=admission_body(
         course, full_name="Meera Joshi", mobile="9876500011", whatsapp_number="9123400011", paid_now="500", installment_count=2,
         first_due_date=(today() - timedelta(days=5)).isoformat())), 201)
@@ -41,25 +41,16 @@ def test_d3_02_search_returns_only_groups_the_user_may_see(admin, world, make_st
     assert ok(make_staff([]).get("/search", params={"q": "Meera"})) == {}
 
 
-# ----------------------------------------------------------------- D3-03 Aadhaar masking / reveal / audit
+# ----------------------------------------------------------------- D3-03 (25 Nov 2026: Aadhaar removed)
 
 
-def test_d3_03_aadhaar_masked_encrypted_admin_reveal_audited(admin, world, make_staff):
+def test_d3_03_no_aadhaar_stored_shown_or_revealed(admin, world, make_staff):
     viewer = make_staff(["students.view", "fees.view", "receipts.view_print", "reports.view", "audit.view"])
-    masked = "XXXX XXXX 0123"
-    assert ok(viewer.get(f"/students/{world['student']}"))["aadhaar_masked"] == masked
-    assert ok(viewer.get(f"/enquiries/{world['enquiry']}"))["aadhaar_masked"] == masked
-    assert ok(viewer.get("/students", params={"q": "Meera"}))["items"][0]["aadhaar_masked"] == masked
-    with engine.connect() as c:
-        ct = c.execute(text("SELECT aadhaar_ciphertext FROM students WHERE student_code=:c"), {"c": world["student"]}).scalar()
-    assert AADHAAR.encode() not in bytes(ct)  # encrypted at rest
-    assert viewer.get(f"/students/{world['student']}/aadhaar").status_code == 403
-    assert viewer.get(f"/enquiries/{world['enquiry']}/aadhaar").status_code == 403
-    assert ok(admin.get(f"/students/{world['student']}/aadhaar"))["aadhaar"] == "2345 6789 0123"
-    ok(admin.get(f"/enquiries/{world['enquiry']}/aadhaar"))
-    rows = ok(admin.get("/audit", params={"action": "AADHAAR_REVEALED"}))["items"]
-    assert {r["entity_id"] for r in rows} == {world["student"], world["enquiry"]} and all(r["actor"]["name"] == "Rakesh Verma" for r in rows)
-    assert AADHAAR not in admin.get("/audit", params={"page_size": 100}).text and "2345 6789 0123" not in admin.get("/audit", params={"page_size": 100}).text
+    for body in (ok(viewer.get(f"/students/{world['student']}")), ok(viewer.get(f"/enquiries/{world['enquiry']}")),
+                 ok(viewer.get("/students", params={"q": "Meera"}))["items"][0]):
+        assert not any("aadhaar" in k for k in body)
+    assert admin.get(f"/students/{world['student']}/aadhaar").status_code == 404
+    assert admin.get(f"/enquiries/{world['enquiry']}/aadhaar").status_code == 404
 
 
 # ----------------------------------------------------------------- D3-04 / D3-05 sidebar counts and notifications from live data
@@ -89,10 +80,9 @@ def test_d3_06_audit_records_actor_time_reason_and_record(admin, world, catalog)
     bill = ok(admin.get("/service-bills"))["items"][0]["code"]
     ok(admin.post(f"/service-bills/{bill}/cancel", json={"reason": "Customer withdrew"}))
     ok(admin.patch(f"/students/{world['student']}", json={"address": "New address, Pune"}))
-    ok(admin.get(f"/students/{world['student']}/aadhaar"))
     rows = {r["action"]: r for r in ok(admin.get("/audit", params={"page_size": 100}))["items"]}
     expect = {"PAYMENT_REVERSED": (pay["receipt"]["receipt_no"], "Entered twice"), "BILL_CANCELLED": (bill, "Customer withdrew"),
-              "STUDENT_UPDATED": (world["student"], None), "AADHAAR_REVEALED": (world["student"], None)}
+              "STUDENT_UPDATED": (world["student"], None)}
     for action, (record, reason) in expect.items():
         r = rows[action]
         assert r["actor"]["name"] == "Rakesh Verma" and r["at"] and r["entity_id"] == record, action
@@ -118,7 +108,7 @@ MATRIX = [  # (method, path template, permission that opens it)
     ("GET", "/audit", "audit.view"),
 ]
 ADMIN_ONLY = [("GET", "/staff"), ("GET", "/permissions"), ("PATCH", "/settings/institute"), ("GET", "/backups"),
-              ("GET", "/students/{student}/aadhaar"), ("POST", "/fees/payments/1/reverse"), ("POST", "/service-bills/X/cancel")]
+              ("POST", "/fees/payments/1/reverse"), ("POST", "/service-bills/X/cancel")]
 
 
 def test_d3_07_staff_access_matrix(admin, world, make_staff):

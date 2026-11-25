@@ -71,7 +71,7 @@ Items on the left, the bill exactly as it prints on the right — both update to
 
 ## Aligned with the specification
 
-- Student status Active / Completed / Left (FR-006); Aadhaar searchable (FR-036).
+- Student status Active / Completed / Left (FR-006); Aadhaar removed 25 Nov 2026 (not collected, stored, shown or searched; see docs/DPDP_AADHAAR_REMOVAL.md).
 - Payment modes Cash, GPay, PhonePe, other UPI, Card, Bank transfer (BR-005).
 - Service job status changes follow WF-07 (Completed and Cancelled are final).
 - P&L for today, week, month, financial year and custom range (FR-032).

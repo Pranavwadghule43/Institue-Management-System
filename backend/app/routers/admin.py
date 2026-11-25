@@ -47,7 +47,8 @@ def staff_status(u: User) -> str:
 
 def staff_out(u: User) -> dict:
     return {"id": u.id, "username": u.username, "full_name": u.full_name, "role": role_label(u.role), "mobile": u.mobile,
-            "designation": u.designation, "status": staff_status(u), "last_login_at": u.last_login_at, "created_at": u.created_at}
+            "designation": u.designation, "status": staff_status(u), "last_login_at": u.last_login_at, "created_at": u.created_at,
+            "must_change_password": bool(u.must_change_password), "recovery_key_set": bool(u.recovery_key_hash and u.recovery_key_hash.startswith("scrypt$"))}
 
 
 def account_limit(db: Session) -> dict:
@@ -112,7 +113,7 @@ def create_staff(body: StaffIn, db: Session = Depends(get_db), user: CurrentUser
     # so two concurrent requests can't create Staff #5. Its error maps to 409 STAFF_ACCOUNT_LIMIT_REACHED.
     temp = _temp_password()
     u = User(username=body.username, full_name=body.full_name, mobile=body.mobile, designation=body.designation or "Staff",
-             role="STAFF", password_hash=hash_password(temp), is_active=True)
+             role="STAFF", password_hash=hash_password(temp), is_active=True, must_change_password=True)
     db.add(u)
     db.flush()
     audit(db, user.id, "STAFF_CREATED", "Staff", str(u.id), f"Staff account {u.username} created")
@@ -196,6 +197,8 @@ def reset_password(uid: int, db: Session = Depends(get_db), user: CurrentUser = 
     _guard_other_staff(u, user)
     temp = _temp_password()
     u.password_hash, u.locked_until, u.failed_attempts = hash_password(temp), None, 0
+    u.must_change_password = True  # SEC-05: the temporary password only opens the Change password screen
+    u.recovery_key_hash = None  # the old key stops working; a new one is shown at their next sign-in
     revoke_sessions(db, u.id)
     audit(db, user.id, "PASSWORD_RESET", "Staff", str(u.id), f"Temporary password issued for {u.username}")
     db.commit()

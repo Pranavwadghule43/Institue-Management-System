@@ -12,7 +12,7 @@ export type Money = string;
 
 export interface Ref { id: number; name: string }
 
-export interface Me { id: number; username: string; full_name: string; role: Role; designation: string | null; permissions: string[]; whatsapp_document_delivery?: boolean }
+export interface Me { id: number; username: string; full_name: string; role: Role; designation: string | null; permissions: string[]; whatsapp_document_delivery?: boolean; must_change_password?: boolean; recovery_key_set?: boolean; recovery_key_reminder?: boolean }
 
 export interface Course {
   id: number; code: string; name: string; duration_months: number | null; fee: Money; description: string | null; is_active: boolean;
@@ -29,7 +29,7 @@ export interface TimeSlot {
 
 export interface Enquiry {
   code: string; student_name: string; guardian_name: string | null; mobile: string; email: string | null; address: string | null;
-  reference: string | null; aadhaar_masked: string | null; course: { id: number; code: string; name: string } | null;
+  reference: string | null; course: { id: number; code: string; name: string } | null;
   course_subtype: { id: number; name: string } | null; course_subtypes: { id: number; name: string }[]; status: EnquiryStatus; handling_staff: Ref | null; created_by: Ref | null;
   student_code: string | null; created_at: string; updated_at: string;
 }
@@ -38,11 +38,11 @@ export interface EnquiryActivity { at: string; by: Ref | null; action: string; o
 export interface StudentRow {
   code: string; full_name: string; guardian_name: string; mobile: string; whatsapp_number: string; course: { id: number; code: string; name: string };
   time_slot: { id: number; name: string }; admission_date: string; status: StudentStatus; net_fee: Money; paid: Money; balance: Money;
-  paid_pct: number; fee_state: FeeState; next_due: { due_date: string; amount: Money } | null; aadhaar_masked: string | null; archived: boolean;
+  paid_pct: number; fee_state: FeeState; next_due: { due_date: string; amount: Money } | null; archived: boolean;
 }
 export interface Student {
   code: string; full_name: string; guardian_name: string; dob: string; gender: string | null; mobile: string; whatsapp_number: string | null;
-  email: string | null; address: string; aadhaar_masked: string | null; education_qualification: string | null; reference: string | null;
+  email: string | null; address: string; education_qualification: string | null; reference: string | null;
   remark: string | null; status: StudentStatus; admission_date: string;
   course: { id: number; code: string; name: string; duration_months: number | null }; course_subtype: { id: number; name: string } | null; course_subtypes: { id: number; name: string }[];
   time_slot: { id: number; name: string; timing: string; days: string; faculty: string | null };
@@ -122,6 +122,7 @@ export interface SeriesRow extends DayTotals { key: string; receipts: number; bi
 export interface StaffMember {
   id: number; username: string; full_name: string; role: Role; mobile: string | null; designation: string | null;
   status: 'Active' | 'Disabled' | 'Locked'; last_login_at: string | null; created_at: string; permissions?: string[];
+  must_change_password?: boolean; recovery_key_set?: boolean;
 }
 export interface AccountLimit { admin_accounts: number; staff_used: number; staff_limit: number; staff_remaining: number }
 export interface Settings {

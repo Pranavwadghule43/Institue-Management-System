@@ -4,7 +4,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 export const API_URL: string = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000/api/v1';
 
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string, public fields: Record<string, string> = {}) {
+  constructor(public status: number, public code: string, message: string, public fields: Record<string, string> = {}, public retryAfter = 0) {
     super(message);
   }
 }
@@ -18,6 +18,9 @@ let token: string | null = (() => {
   }
 })();
 let onUnauthorized: () => void = () => {};
+let onRestricted: () => void = () => {};
+/** 23 Nov (SEC-05): the server answers 403 with this code until a temporary password has been changed. */
+const RESTRICTED = new Set(['PASSWORD_CHANGE_REQUIRED']);
 
 export const getToken = () => token;
 export function setToken(t: string | null) {
@@ -31,6 +34,7 @@ export function setToken(t: string | null) {
   }
 }
 export const setUnauthorizedHandler = (fn: () => void) => (onUnauthorized = fn);
+export const setRestrictedHandler = (fn: () => void) => (onRestricted = fn);
 
 type Query = Record<string, string | number | boolean | null | undefined>;
 interface Opts { method?: string; body?: unknown; query?: Query; idempotencyKey?: string; signal?: AbortSignal }
@@ -62,7 +66,8 @@ async function request(path: string, { method = 'GET', body, query, idempotencyK
       /* non-JSON error body */
     }
     if (res.status === 401 && path !== '/auth/login') onUnauthorized();
-    throw new ApiError(res.status, err.code, err.message, err.field_errors);
+    if (res.status === 403 && RESTRICTED.has(err.code)) onRestricted();
+    throw new ApiError(res.status, err.code, err.message, err.field_errors, Number(res.headers.get('Retry-After')) || 0);
   }
   return res;
 }

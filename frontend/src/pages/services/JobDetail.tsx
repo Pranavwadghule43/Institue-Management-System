@@ -127,8 +127,8 @@ export default function JobDetail() {
             sub={docs?.length ? `${docs.length} file${docs.length > 1 ? 's' : ''} · private, opened only through the app` : 'No documents on this job'}
             actions={can('service_documents.upload') ? (
               <>
-                <input className="input" style={{ width: 170, height: 32 }} placeholder="Type (e.g. Aadhaar Card)" value={docType} onChange={(e) => setDocType(e.target.value)} aria-label="Document type" list="doc-types" title="Unknown or blank types are visible only to staff allowed to view sensitive documents" />
-                <datalist id="doc-types">{['Aadhaar Card', 'PAN Card', 'Bank Passbook', 'Form 16', 'Passport', 'Driving Licence', 'Voter ID', 'Passport Photo', 'Signature', 'Application Form', 'Receipt'].map((t) => <option key={t} value={t} />)}</datalist>
+                <input className="input" style={{ width: 170, height: 32 }} placeholder="Type (e.g. PAN Card)" value={docType} onChange={(e) => setDocType(e.target.value)} aria-label="Document type" list="doc-types" title="Unknown or blank types are visible only to staff allowed to view sensitive documents" />
+                <datalist id="doc-types">{['PAN Card', 'Bank Passbook', 'Form 16', 'Passport', 'Driving Licence', 'Voter ID', 'Passport Photo', 'Signature', 'Application Form', 'Receipt'].map((t) => <option key={t} value={t} />)}</datalist>
                 <button className="btn btn-secondary btn-sm" onClick={() => fileRef.current?.click()}><FileUp /> Upload</button>
                 <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) upload(f); }} />
               </>

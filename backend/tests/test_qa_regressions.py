@@ -72,9 +72,9 @@ def test_cancelling_a_paid_bill_keeps_collected_cash_visible(admin, catalog, job
 # ----------------------------------------------------------------- QA-03 (High) sensitive documents detected by file name
 
 
-def test_aadhaar_photo_copy_is_sensitive(admin, job, make_staff):
-    jpg = b"\xff\xd8\xff\xe0" + b"0" * 50
-    d = ok(admin.post(f"/service-jobs/{job['code']}/documents", files={"file": ("aadhaar photo copy.jpg", jpg, "image/jpeg")}), 201)
+def test_identity_photo_copy_is_sensitive(admin, job, make_staff):
+    jpg = b"\xff\xd8\xff\xe0" + b"0" * 50  # 25 Nov: Aadhaar uploads are refused, so a PAN copy stands in for an ID copy
+    d = ok(admin.post(f"/service-jobs/{job['code']}/documents", files={"file": ("pan photo copy.jpg", jpg, "image/jpeg")}), 201)
     staff = make_staff(["service_jobs.view"])
     assert staff.get(f"/service-jobs/{job['code']}/documents/{d['id']}").status_code == 403
 
@@ -171,11 +171,11 @@ def test_admission_retry_with_same_key_replays(admin, course, enquiry):
 # ----------------------------------------------------------------- QA-08 (Medium) duplicate admissions
 
 
-@bug("QA-08", "no duplicate check on Aadhaar hash / mobile+course; the same person can be admitted twice via two enquiries")
-def test_same_aadhaar_cannot_be_admitted_twice(admin, course):
+@bug("QA-08", "no duplicate check on mobile+course; the same person can be admitted twice via two enquiries")
+def test_same_person_cannot_be_admitted_twice(admin, course):
     from conftest import admission_body
     for i in range(2):
-        e = ok(admin.post("/enquiries", json={"student_name": "Aarav Sharma", "mobile": "9876543210", "course_id": course["id"], "aadhaar": "234567890123"}), 201)
+        e = ok(admin.post("/enquiries", json={"student_name": "Aarav Sharma", "mobile": "9876543210", "course_id": course["id"]}), 201)
         r = admin.post(f"/enquiries/{e['code']}/convert", json=admission_body(course, paid_now="0", installment_count=1, payment_mode=None))
         if i == 0:
             ok(r, 201)

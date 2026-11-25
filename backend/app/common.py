@@ -1,6 +1,4 @@
-"""Shared helpers: request models, validators, money, time, pagination, audit, numbering, Aadhaar."""
-import hashlib
-import hmac
+"""Shared helpers: request models, validators, money, time, pagination, audit, numbering."""
 import re
 import calendar
 from contextvars import ContextVar
@@ -9,23 +7,35 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Literal
 
-from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Query
-from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints, model_validator
+from pydantic_core import PydanticCustomError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .errors import AppError
 from .models import AuditLog, InstituteSettings, NumberSequence
 
 # ----------------------------------------------------------------- request models / validators
 
 
+# 25 Nov 2026 (client decision, DPDP data minimisation): IMS no longer collects Aadhaar. Any request field that looks like
+# an Aadhaar field, in any spelling, is refused with a clear message instead of being stored (older clients included).
+AADHAAR_FIELD = re.compile(r"a+d+h*a+a*r|adhar|uidai", re.I)
+AADHAAR_REFUSED = "Aadhaar is no longer collected by IMS. Remove this field."
+
+
 class In(BaseModel):
     """Base for request bodies: unknown fields are rejected, so clients can't send totals or IDs."""
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_aadhaar(cls, data):
+        if isinstance(data, dict) and any(isinstance(k, str) and AADHAAR_FIELD.search(k) for k in data):
+            raise PydanticCustomError("aadhaar_not_collected", AADHAAR_REFUSED)
+        return data
 
 
 PayMode = Literal["Cash", "GPay", "PhonePe", "UPI", "Card", "Bank"]
@@ -46,13 +56,6 @@ def _mobile(v):
     return d
 
 
-def _aadhaar(v):
-    d = re.sub(r"\D", "", str(v))
-    if len(d) != 12:
-        raise ValueError("Aadhaar must contain 12 digits")
-    return d
-
-
 def _email(v):
     if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", v):
         raise ValueError("Enter a valid email address")
@@ -61,7 +64,6 @@ def _email(v):
 
 Mobile = Annotated[str, BeforeValidator(_mobile)]
 OptMobile = Annotated[str | None, BeforeValidator(lambda v: None if _blank_none(v) is None else _mobile(v))]
-OptAadhaar = Annotated[str | None, BeforeValidator(lambda v: None if _blank_none(v) is None else _aadhaar(v))]
 # QA-01: length/format apply to the string branch only; blank or null means "no email" (was a 500 on None).
 OptEmail = Annotated[Annotated[str, StringConstraints(strip_whitespace=True, max_length=255), AfterValidator(_email)] | None, BeforeValidator(_blank_none)]
 OptText = Annotated[Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] | None, BeforeValidator(_blank_none)]
@@ -266,33 +268,3 @@ def next_code(db: Session, kind: str) -> str:
     return f"{prefix}-{period}-{n:0{width}d}" if yearly else f"{prefix}-{n:0{width}d}"
 
 
-# ----------------------------------------------------------------- Aadhaar (keys agreed with the security developer)
-
-
-def _key(name: str) -> str:
-    key = getattr(settings, name)
-    if not key:
-        raise AppError(503, "AADHAAR_KEY_MISSING", "Aadhaar storage is not configured on the server.")
-    return key
-
-
-def aadhaar_hash(digits: str) -> str:
-    return hmac.new(_key("aadhaar_hash_key").encode(), digits.encode(), hashlib.sha256).hexdigest()
-
-
-def aadhaar_columns(digits: str | None) -> dict:
-    if not digits:
-        return {"aadhaar_ciphertext": None, "aadhaar_lookup_hash": None, "aadhaar_last4": None}
-    return {"aadhaar_ciphertext": Fernet(_key("aadhaar_enc_key")).encrypt(digits.encode()),
-            "aadhaar_lookup_hash": aadhaar_hash(digits), "aadhaar_last4": digits[-4:]}
-
-
-def aadhaar_decrypt(ciphertext: bytes) -> str:
-    try:
-        return Fernet(_key("aadhaar_enc_key")).decrypt(bytes(ciphertext)).decode()
-    except InvalidToken:
-        raise AppError(500, "AADHAAR_DECRYPT_FAILED", "Stored Aadhaar could not be read with the configured key.")
-
-
-def aadhaar_mask(last4: str | None) -> str | None:
-    return f"XXXX XXXX {last4}" if last4 else None

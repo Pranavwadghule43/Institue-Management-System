@@ -9,6 +9,7 @@ import markReverse from '../assets/mark-reverse.png';
 import { errText, useApp } from './AppContext';
 import { NAV, type NavNode } from './nav';
 import { Avatar, Field, Menu, Modal, useDebounced } from '../components/ui';
+import { RecoveryKeyDialog } from '../components/RecoveryKey';
 import { api, useQuery } from '../api/client';
 import type { AuditItem } from '../api/types';
 import { ago } from '../lib/format';
@@ -169,6 +170,7 @@ function Topbar({ onToggleNav, collapsed, onSearch }: { onToggleNav: () => void;
   const nav = useNavigate();
   const { data: notes } = useQuery<Notes>('/meta/notifications');
   const [pw, setPw] = useState(false);
+  const [rk, setRk] = useState(false);
   const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
   const attention = (notes?.overdue_fees ?? 0) + (notes?.urgent_jobs ?? 0);
 
@@ -268,6 +270,9 @@ function Topbar({ onToggleNav, collapsed, onSearch }: { onToggleNav: () => void;
           <button className="menu__item" onClick={() => setPw(true)}>
             <KeyRound /> Change password
           </button>
+          <button className="menu__item" onClick={() => setRk(true)}>
+            <KeyRound /> Recovery key
+          </button>
           <div className="menu__sep" />
           <button
             className="menu__item danger"
@@ -281,6 +286,7 @@ function Topbar({ onToggleNav, collapsed, onSearch }: { onToggleNav: () => void;
         </Menu>
       </div>
       <ChangePassword open={pw} onClose={() => setPw(false)} />
+      <RecoveryKeyDialog open={rk} onClose={() => setRk(false)} />
     </header>
   );
 }
@@ -398,7 +404,7 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
           <Search />
           <input
             autoFocus
-            placeholder="Name, mobile, Student ID, Aadhaar (12 digits), job or receipt no."
+            placeholder="Name, mobile, Student ID, job or receipt no."
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {

@@ -53,8 +53,14 @@ def test_documents_private_validated_and_audited(admin, job, make_staff):
     assert admin.post(f"/service-jobs/{code}/documents", files={"file": ("fake.pdf", b"not a pdf", "application/pdf")}).json()["error"]["code"] == "FILE_TYPE_NOT_ALLOWED"
     big = b"%PDF-" + b"0" * (5 * 1024 * 1024)
     assert admin.post(f"/service-jobs/{code}/documents", files={"file": ("big.pdf", big, "application/pdf")}).json()["error"]["code"] == "FILE_TOO_LARGE"
-    doc = ok(admin.post(f"/service-jobs/{code}/documents", files={"file": ("aadhaar.pdf", pdf, "application/pdf")},
-                        data={"document_type": "Aadhaar Card"}), 201)
+    # 25 Nov 2026: Aadhaar documents are refused, by type or by file name ("Udyog Aadhaar" is a business registration).
+    r = admin.post(f"/service-jobs/{code}/documents", files={"file": ("scan.pdf", pdf, "application/pdf")}, data={"document_type": "Aadhaar Card"})
+    assert r.status_code == 400 and r.json()["error"]["code"] == "AADHAAR_NOT_COLLECTED"
+    assert admin.post(f"/service-jobs/{code}/documents", files={"file": ("aadhar_front.jpg", b"\xff\xd8\xff\xe0x", "image/jpeg")}).json()["error"]["code"] == "AADHAAR_NOT_COLLECTED"
+    udyog = ok(admin.post(f"/service-jobs/{code}/documents", files={"file": ("udyog_aadhaar_certificate.pdf", pdf, "application/pdf")}), 201)
+    assert admin.delete(f"/service-jobs/{code}/documents/{udyog['id']}").status_code == 204
+    doc = ok(admin.post(f"/service-jobs/{code}/documents", files={"file": ("pan.pdf", pdf, "application/pdf")},
+                        data={"document_type": "PAN Card"}), 201)
     assert doc["sensitive"] and "storage" not in str(doc)
     staff = make_staff(["service_jobs.view"])
     assert staff.get(f"/service-jobs/{code}/documents/{doc['id']}").status_code == 403

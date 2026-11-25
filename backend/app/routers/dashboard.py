@@ -13,6 +13,7 @@ from ..models import (
     StudentPayment as P, User,
 )
 from ..security import CurrentUser, get_current_user, me_payload, require
+from ..ratelimit import limited
 from .jobs import OPEN, jobs_payload
 from .students import search_filter
 
@@ -138,7 +139,7 @@ def my_dashboard(db: Session = Depends(get_db), user: CurrentUser = Depends(get_
     }
 
 
-@router.get("/search")
+@router.get("/search", dependencies=[Depends(limited("search"))])
 def global_search(q: str = Query(min_length=2, max_length=100), db: Session = Depends(get_db), user: CurrentUser = Depends(get_current_user)):
     """Ctrl+K palette: each group only appears when the user may see it."""
     pat, digits = like(q), q.replace(" ", "")

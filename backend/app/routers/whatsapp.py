@@ -23,6 +23,7 @@ from ..document_pdf import render_pdf
 from ..errors import AppError, bad, conflict
 from ..models import FeeReceipt, Student, StudentPayment, WhatsAppDocumentDelivery as Delivery
 from ..security import CurrentUser, require
+from ..ratelimit import limited
 from ..timing import timed_operation
 from . import bills, fees
 
@@ -149,7 +150,7 @@ def receipt_status(code: str, db: Session = Depends(get_db), _: CurrentUser = De
     return status(db, "receipt", code)
 
 
-@router.post("/receipts/{code}/whatsapp-delivery")
+@router.post("/receipts/{code}/whatsapp-delivery", dependencies=[Depends(limited("whatsapp"))])
 def send_receipt(code: str, body: SendIn, db: Session = Depends(get_db), user: CurrentUser = Depends(require("receipts.view_print"))):
     return send(db, "receipt", code, body, user)
 
@@ -159,7 +160,7 @@ def bill_status(code: str, db: Session = Depends(get_db), _: CurrentUser = Depen
     return status(db, "bill", code)
 
 
-@router.post("/service-bills/{code}/whatsapp-delivery")
+@router.post("/service-bills/{code}/whatsapp-delivery", dependencies=[Depends(limited("whatsapp"))])
 def send_bill(code: str, body: BillSendIn, db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_bill.create"))):
     return send(db, "bill", code, body, user)
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
-  Archive, BookOpen, CalendarClock, CalendarDays, CheckCircle2, Clock, Eye, EyeOff, FileText, IndianRupee, MessageCircle, Pencil, Phone, Printer, ReceiptText, UserX,
+  Archive, BookOpen, CalendarClock, CalendarDays, CheckCircle2, Clock, FileText, IndianRupee, MessageCircle, Pencil, Phone, Printer, ReceiptText, UserX,
 } from 'lucide-react';
 import { errText, useApp } from '../../app/AppContext';
 import {
@@ -23,9 +23,8 @@ interface Profile { student: Student; fees: FeeSummary | null; payments: Payment
 export default function StudentProfile() {
   const { id } = useParams();
   const [params, setParams] = useSearchParams();
-  const { can, role, toast } = useApp();
+  const { can } = useApp();
   const [tab, setTab] = useState<Tab>('overview');
-  const [aadhaar, setAadhaar] = useState<string | null>(null);
   const [dialog, setDialog] = useState<'' | 'edit' | 'slot' | 'left' | 'completed' | 'archive' | 'plan'>(params.get('edit') ? 'edit' : '');
   const { data, error, loading } = useQuery<Profile>(`/students/${id}/profile`);
   if (error?.status === 404) return <NotFound what="student" />;
@@ -37,14 +36,6 @@ export default function StudentProfile() {
   const closeDialog = () => {
     setDialog('');
     if (params.get('edit')) setParams({});
-  };
-  const reveal = async () => {
-    if (aadhaar) return setAadhaar(null);
-    try {
-      setAadhaar((await api<{ aadhaar: string }>(`/students/${s.code}/aadhaar`)).aadhaar);
-    } catch (e) {
-      toast('error', errText(e));
-    }
   };
   const editable = !s.archived;
 
@@ -180,17 +171,6 @@ export default function StudentProfile() {
                   <dd>{s.email || <span className="muted">—</span>}</dd>
                   <dt>Address</dt>
                   <dd>{s.address}</dd>
-                  <dt>Aadhaar</dt>
-                  <dd className="num">
-                    <span className="row" style={{ justifyContent: 'flex-end', gap: 6 }}>
-                      {aadhaar ?? s.aadhaar_masked ?? <span className="muted">—</span>}
-                      {role === 'Admin' && s.aadhaar_masked && (
-                        <button className="icon-btn sm" onClick={reveal} aria-label={aadhaar ? 'Hide Aadhaar' : 'Reveal Aadhaar (audited)'} data-tip={aadhaar ? 'Hide' : 'Reveal (audited)'}>
-                          {aadhaar ? <EyeOff /> : <Eye />}
-                        </button>
-                      )}
-                    </span>
-                  </dd>
                 </dl>
               </Panel>
               <Panel title="Enrolment">
@@ -350,7 +330,7 @@ function ReasonDialog({ open, onClose, title, body, required, confirmLabel, run 
 function EditStudent({ open, s, onClose }: { open: boolean; s: Student; onClose: () => void }) {
   const { toast } = useApp();
   const init = () => ({ full_name: s.full_name, guardian_name: s.guardian_name, dob: s.dob, gender: s.gender ?? 'Male', mobile: s.mobile,
-    whatsapp_number: s.whatsapp_number ?? '', email: s.email ?? '', address: s.address, aadhaar: '' });
+    whatsapp_number: s.whatsapp_number ?? '', email: s.email ?? '', address: s.address });
   const [f, setF] = useState(init);
   const [errs, setErrs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -370,7 +350,6 @@ function EditStudent({ open, s, onClose }: { open: boolean; s: Student; onClose:
     try {
       const body: Record<string, unknown> = { ...f, whatsapp_number: f.whatsapp_number || f.mobile };
       if (subs !== null) body.course_subtype_ids = subs;
-      if (!f.aadhaar) delete body.aadhaar; // blank keeps the stored Aadhaar
       await write(api(`/students/${s.code}`, { method: 'PATCH', body }));
       toast('success', 'Student updated');
       onClose();
@@ -392,7 +371,6 @@ function EditStudent({ open, s, onClose }: { open: boolean; s: Student; onClose:
         <Field label="Mobile" required error={errs.mobile} htmlFor="e-m"><input id="e-m" className="input num" value={f.mobile} onChange={(e) => set('mobile', e.target.value)} /></Field>
         <Field label="WhatsApp number" error={errs.whatsapp_number} hint="Blank = same as mobile" htmlFor="e-wa"><input id="e-wa" className="input num" value={f.whatsapp_number} onChange={(e) => set('whatsapp_number', e.target.value)} /></Field>
         <Field label="Email" error={errs.email} htmlFor="e-em"><input id="e-em" className="input" value={f.email} onChange={(e) => set('email', e.target.value)} /></Field>
-        <Field label="Aadhaar" error={errs.aadhaar} hint={s.aadhaar_masked ? `Blank keeps ${s.aadhaar_masked}` : 'Optional, 12 digits'} htmlFor="e-ad"><input id="e-ad" className="input num" value={f.aadhaar} onChange={(e) => set('aadhaar', e.target.value)} /></Field>
         <Field label="Address" required className="span-2" error={errs.address} htmlFor="e-addr"><textarea id="e-addr" className="textarea" rows={2} value={f.address} onChange={(e) => set('address', e.target.value)} /></Field>
         <SubtypeChecks courseId={open ? s.course.id : null} value={subs ?? s.course_subtypes.map((x) => x.id)} onChange={setSubs} error={errs.course_subtype_ids ?? errs.course_subtype_id} />
       </div>

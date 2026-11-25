@@ -3,6 +3,7 @@ import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppProvider, useApp } from './app/AppContext';
 import { AppShell } from './app/AppShell';
 import Login from './pages/Login';
+import { ForcedPasswordChange, RecoveryKeySetup } from './pages/SecuritySetup';
 import NotFound, { PermissionDenied } from './pages/NotFound';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -50,9 +51,12 @@ function Booting() {
 }
 
 function Protected() {
-  const { signedIn, booting } = useApp();
+  const { signedIn, booting, user } = useApp();
   if (booting) return <Booting />;
-  return signedIn ? <AppShell /> : <Navigate to="/login" replace />;
+  if (!signedIn) return <Navigate to="/login" replace />;
+  if (user.mustChangePassword) return <ForcedPasswordChange />; // SEC-05
+  if (user.recoveryKeyReminder) return <RecoveryKeySetup />; // every account keeps a recovery key
+  return <AppShell />;
 }
 
 function LoginRoute() {

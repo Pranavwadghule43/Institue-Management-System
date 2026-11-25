@@ -41,7 +41,7 @@ SECURITY_HEADERS = {"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DEN
 
 @app.middleware("http")
 async def request_log(request: Request, call_next):
-    """Correlation ID + route/method/status/duration + security headers. Never logs bodies, tokens or Aadhaar."""
+    """Correlation ID + route/method/status/duration + security headers. Never logs bodies or tokens."""
     supplied_id = request.headers.get("X-Request-ID", "")
     rid = supplied_id if re.fullmatch(r"[a-fA-F0-9]{32}", supplied_id) else uuid.uuid4().hex
     ctx_token = request_ctx.set((request.client.host if request.client else None, (request.headers.get("user-agent") or "")[:500]))
@@ -75,7 +75,7 @@ async def request_log(request: Request, call_next):
 
 # Added last so it runs first: CORS answers preflights before anything else.
 app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credentials=False, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
-                   allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"], expose_headers=["X-Request-ID", "Content-Disposition"],
+                   allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"], expose_headers=["X-Request-ID", "Content-Disposition", "Retry-After"],
                    max_age=600)
 
 

@@ -60,7 +60,7 @@ export function CourseSelect({ courseId, subtypeIds, onChange, idPrefix }: { cou
 export function NewEnquiry() {
   const { toast } = useApp();
   const nav = useNavigate();
-  const [form, setForm] = useState({ student_name: '', mobile: '', guardian_name: '', email: '', address: '', aadhaar: '', reference: '', course_id: '', course_subtype_ids: [] as number[] });
+  const [form, setForm] = useState({ student_name: '', mobile: '', guardian_name: '', email: '', address: '', reference: '', course_id: '', course_subtype_ids: [] as number[] });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -80,7 +80,7 @@ export function NewEnquiry() {
     }
   };
   return <>
-    <PageHeader title="New enquiry" sub="Save an enquiry before confirming admission. Aadhaar is optional." crumbs={[["Enquiries", "/enquiries"], ["New enquiry"]]} />
+    <PageHeader title="New enquiry" sub="Save an enquiry before confirming admission." crumbs={[["Enquiries", "/enquiries"], ["New enquiry"]]} />
     <section className="panel"><div className="panel__body"><div className="form-grid">
       <Field label="Student name" required htmlFor="en-name" error={errors.student_name}><input id="en-name" className="input" value={form.student_name} onChange={(e) => set('student_name', e.target.value)} /></Field>
       <Field label="Mobile number" required htmlFor="en-phone" error={errors.mobile}><input id="en-phone" className="input" inputMode="numeric" value={form.mobile} onChange={(e) => set('mobile', e.target.value)} /></Field>
@@ -88,7 +88,6 @@ export function NewEnquiry() {
       <Field label="Email" htmlFor="en-email" error={errors.email}><input id="en-email" className="input" type="email" value={form.email} onChange={(e) => set('email', e.target.value)} /></Field>
       <Field label="Address" htmlFor="en-address"><input id="en-address" className="input" value={form.address} onChange={(e) => set('address', e.target.value)} /></Field>
       <Field label="Reference" htmlFor="en-ref"><input id="en-ref" className="input" value={form.reference} onChange={(e) => set('reference', e.target.value)} /></Field>
-      <Field label="Aadhaar number (optional)" htmlFor="en-aadhaar" error={errors.aadhaar}><input id="en-aadhaar" className="input" inputMode="numeric" value={form.aadhaar} onChange={(e) => set('aadhaar', e.target.value)} /></Field>
       <CourseSelect idPrefix="en" courseId={form.course_id} subtypeIds={form.course_subtype_ids} onChange={(c, s) => setForm((f) => ({ ...f, course_id: c, course_subtype_ids: s }))} />
     </div>{error && <p className="field__error" role="alert">{error}</p>}</div><div className="panel__foot"><Link className="btn btn-secondary" to="/enquiries">Cancel</Link><button className="btn btn-primary" disabled={busy} onClick={save}>{busy && <span className="spinner" />}Save enquiry</button></div></section>
   </>;
@@ -119,7 +118,7 @@ export function EnquiryDetail() {
   };
   return <>
     <PageHeader title={`${enquiry.student_name} · ${enquiry.code}`} sub={`Status: ${enquiry.status} · Handled by ${enquiry.handling_staff?.name ?? '—'}`} crumbs={[["Enquiries", "/enquiries"], [enquiry.code]]} actions={enquiry.student_code ? <Link className="btn btn-primary" to={`/students/${enquiry.student_code}`}><CheckCircle2 /> View student</Link> : can('students.create') ? <Link className="btn btn-primary" to={`/students/new?enquiry=${enquiry.code}`}>Confirm admission</Link> : undefined} />
-    <div className="two-col"><Panel title="Enquiry details"><p><strong>Mobile:</strong> {enquiry.mobile}</p>{enquiry.guardian_name && <p><strong>Guardian:</strong> {enquiry.guardian_name}</p>}<p><strong>Course:</strong> {enquiry.course?.name ?? 'Undecided'}{enquiry.course_subtypes?.length ? ` · ${enquiry.course_subtypes.map((x) => x.name).join(', ')}` : ''}</p><p><strong>Reference:</strong> {enquiry.reference || '—'}</p>{enquiry.aadhaar_masked && <p><strong>Aadhaar:</strong> {enquiry.aadhaar_masked}</p>}<p><strong>Created:</strong> {dateTime(enquiry.created_at)}</p></Panel>
+    <div className="two-col"><Panel title="Enquiry details"><p><strong>Mobile:</strong> {enquiry.mobile}</p>{enquiry.guardian_name && <p><strong>Guardian:</strong> {enquiry.guardian_name}</p>}<p><strong>Course:</strong> {enquiry.course?.name ?? 'Undecided'}{enquiry.course_subtypes?.length ? ` · ${enquiry.course_subtypes.map((x) => x.name).join(', ')}` : ''}</p><p><strong>Reference:</strong> {enquiry.reference || '—'}</p><p><strong>Created:</strong> {dateTime(enquiry.created_at)}</p></Panel>
     <Panel title="Follow up"><div className="stack"><select className="select" aria-label="New status" value={status} onChange={(e) => setStatus(e.target.value as Exclude<EnquiryStatus, 'Converted'>)}>{(['New', 'Pending', 'Follow-Up'] as const).map((s) => <option key={s}>{s}</option>)}</select><textarea className="textarea" aria-label="Follow-up notes" placeholder="Follow-up notes" value={note} onChange={(e) => setNote(e.target.value)} /><button className="btn btn-primary" disabled={busy || enquiry.status === 'Converted' || !can('students.create')} onClick={save}>{busy && <span className="spinner" />}Save update</button></div></Panel></div>
     <Panel title="Activity history">{activity?.map((a, i) => <div key={i} className="row-between" style={{ padding: 10, borderBottom: '1px solid var(--line)' }}><span><strong>{a.action}</strong> · {a.status}{a.note && <span className="muted"> · {a.note}</span>}</span><small>{a.by?.name ?? '—'} · {dateTime(a.at)}</small></div>)}</Panel>
   </>;

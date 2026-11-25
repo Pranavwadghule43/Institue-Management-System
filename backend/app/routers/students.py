@@ -1,4 +1,5 @@
-"""Admission (enquiry -> student), student list/profile, edit, status, archive, change time slot, Aadhaar reveal."""
+"""Admission (enquiry -> student), student list/profile, edit, status, archive, change time slot.
+25 Nov 2026: Aadhaar removed (no longer collected, shown, searched or revealed)."""
 import re
 from datetime import date
 from decimal import ROUND_FLOOR, Decimal
@@ -10,19 +11,19 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from ..common import (
-    ZERO, In, Mobile, Money, OptAadhaar, OptEmail, OptMobile, OptStr, OptText, Paging, PayMode, Reason, Str, aadhaar_columns,
-    aadhaar_decrypt, aadhaar_hash, aadhaar_mask, add_months_clamped, apply_changes, audit, like, money, next_code, now, paginate,
+    ZERO, In, Mobile, Money, OptEmail, OptMobile, OptStr, OptText, Paging, PayMode, Reason, Str,
+    add_months_clamped, apply_changes, audit, like, money, next_code, now, paginate,
     paging, today, user_names, user_ref,
 )
 from ..db import get_db
-from ..errors import AppError, bad, conflict, not_found
+from ..errors import bad, conflict, not_found
 from ..ledger import INSTALLMENT_NO_OFFSET, fee_cols, fee_summary, pct, reallocate, summarize_installments
 from ..models import (
     Course, CourseSubtype, Enquiry, EnquiryActivity, FeeReceipt, FeeReminderEvent, AuditLog, Student, StudentInstallment, StudentPayment,
     StudentPaymentAllocation,
     StudentTimeSlotHistory, TimeSlot,
 )
-from ..security import CurrentUser, require, require_admin
+from ..security import CurrentUser, require
 from .academics import fmt_time, get_course, slot_status
 from .fees import payment_out, receipt_out, record_payment
 
@@ -78,7 +79,6 @@ class AdmissionIn(In):
     whatsapp_number: OptMobile = None  # omitted -> same as mobile
     email: OptEmail = None
     address: Str(2000)
-    aadhaar: OptAadhaar = None  # omitted -> keep the enquiry's Aadhaar
     education_qualification: OptStr(200) = None
     remark: OptText = None
     course_id: int
@@ -195,15 +195,13 @@ def admit(db: Session, enquiry_code: str, body: AdmissionIn, user: CurrentUser, 
     if body.paid_now > 0 and body.payment_mode == "Bank" and not body.payment_reference:
         raise bad("REFERENCE_REQUIRED", "Transaction / UTR reference is required for bank transfers.", "payment_reference")
 
-    aadhaar = aadhaar_columns(body.aadhaar) if body.aadhaar else {
-        "aadhaar_ciphertext": e.aadhaar_ciphertext, "aadhaar_lookup_hash": e.aadhaar_lookup_hash, "aadhaar_last4": e.aadhaar_last4}
     t = today()
     s = Student(
         student_code=next_code(db, "STUDENT"), enquiry_id=e.id, full_name=body.full_name, guardian_name=body.guardian_name, dob=body.dob,
         gender=body.gender, mobile=body.mobile, whatsapp_number=body.whatsapp_number or body.mobile, email=body.email, address=body.address,
         education_qualification=body.education_qualification, remark=body.remark, reference=e.reference, course=course,
         course_subtype_id=chosen[0].id if chosen else None, time_slot=slot, admission_date=t, status="Active", agreed_fee=fee,
-        discount=body.discount, net_fee=net, created_by=user.id, **aadhaar)
+        discount=body.discount, net_fee=net, created_by=user.id)  # an enquiry's old Aadhaar is never copied (25 Nov)
     s.subtypes = chosen
     db.add(s)
     db.flush()
@@ -252,7 +250,7 @@ def student_out(s: Student) -> dict:
     return {
         "code": s.student_code, "full_name": s.full_name, "guardian_name": s.guardian_name, "dob": s.dob, "gender": s.gender,
         "mobile": s.mobile, "whatsapp_number": s.whatsapp_number, "email": s.email, "address": s.address,
-        "aadhaar_masked": aadhaar_mask(s.aadhaar_last4), "education_qualification": s.education_qualification,
+        "education_qualification": s.education_qualification,
         "reference": s.reference, "remark": s.remark, "status": s.status, "admission_date": s.admission_date,
         "course": {"id": s.course.id, "code": s.course.code, "name": s.course.name,
                    "duration_months": int(s.course.duration) if (s.course.duration or "").isdigit() else None},
@@ -276,18 +274,11 @@ def get_student(db: Session, code: str, lock: bool = False, archived_ok: bool = 
 
 
 def search_filter(q: str):
-    """Name, guardian, mobile, Student ID; Aadhaar only by full 12 digits (hash) or last 4 (no plaintext is stored)."""
+    """Name, guardian, mobile, Student ID. (Aadhaar search removed 25 Nov 2026.)"""
     conds = [Student.full_name.ilike(like(q)), Student.guardian_name.ilike(like(q)), Student.student_code.ilike(like(q))]
     digits = re.sub(r"\D", "", q)
     if digits:
         conds.append(Student.mobile.like(like(digits)))
-    if len(digits) == 12:
-        try:
-            conds.append(Student.aadhaar_lookup_hash == aadhaar_hash(digits))
-        except AppError:
-            pass  # Aadhaar key not configured: search the other fields only
-    elif len(digits) == 4 and digits == q.strip():
-        conds.append(Student.aadhaar_last4 == digits)
     return or_(*conds)
 
 
@@ -324,7 +315,7 @@ def list_students(q: str | None = None, course_id: int | None = None, time_slot_
         "time_slot": {"id": r[0].time_slot.id, "name": r[0].time_slot.name}, "admission_date": r[0].admission_date, "status": r[0].status,
         "net_fee": money(r[0].net_fee), "paid": money(r[1]), "balance": money(r[2]), "paid_pct": pct(r[1], r[0].net_fee),
         "fee_state": r[5], "next_due": {"due_date": r[3], "amount": money(r[4])} if r[3] else None,
-        "aadhaar_masked": aadhaar_mask(r[0].aadhaar_last4), "archived": r[0].deleted_at is not None}, scalars=False, counts=counts)
+        "archived": r[0].deleted_at is not None}, scalars=False, counts=counts)
 
 
 @router.get("/students/{code}")
@@ -370,7 +361,6 @@ class StudentPatch(In):
     whatsapp_number: OptMobile = None
     email: OptEmail = None
     address: Str(2000) | None = None
-    aadhaar: OptAadhaar = None
     course_subtype_id: int | None = None
     course_subtype_ids: list[int] | None = Field(None, max_length=20)
     education_qualification: OptStr(200) = None
@@ -398,14 +388,7 @@ def update_student(code: str, body: StudentPatch, db: Session = Depends(get_db),
         subtype_change = check_subtypes(db, s.course_id, subtype_ids, existing_ids=frozenset(st.id for st in s.subtypes))
         slot = db.get(TimeSlot, s.time_slot_id, with_for_update={"read": True}, populate_existing=True)
         _check_slot_subtype(slot, subtype_ids, "course_subtype_ids")
-    aadhaar_changed = "aadhaar" in data
-    if aadhaar_changed:
-        data.update(aadhaar_columns(data.pop("aadhaar")))
     before, after = apply_changes(s, data)
-    for k in ("aadhaar_ciphertext", "aadhaar_lookup_hash", "aadhaar_last4"):  # never put Aadhaar in the audit log
-        before.pop(k, None), after.pop(k, None)
-    if aadhaar_changed:
-        before["aadhaar"], after["aadhaar"] = "(hidden)", "changed"
     if subtype_change is not None and [x.id for x in subtype_change] != [x.id for x in s.subtypes]:
         before["sub_types"], after["sub_types"] = ", ".join(x.name for x in s.subtypes) or "-", ", ".join(x.name for x in subtype_change) or "-"
         s.subtypes, s.course_subtype_id = subtype_change, subtype_change[0].id if subtype_change else None
@@ -487,16 +470,6 @@ def time_slot_history(code: str, db: Session = Depends(get_db), _: CurrentUser =
     return [{"at": r.changed_at, "from": slots.get(r.old_time_slot_id), "to": slots.get(r.new_time_slot_id), "by": user_ref(names, r.changed_by),
              "reason": r.reason} for r in rows]
 
-
-@router.get("/students/{code}/aadhaar")
-def reveal_aadhaar(code: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require_admin)):
-    s = get_student(db, code, archived_ok=True)
-    if not s.aadhaar_ciphertext:
-        raise not_found("aadhaar")
-    value = aadhaar_decrypt(s.aadhaar_ciphertext)
-    audit(db, user.id, "AADHAAR_REVEALED", "Student", s.student_code, f"Aadhaar revealed for {s.full_name}")
-    db.commit()
-    return {"aadhaar": " ".join(value[i:i + 4] for i in range(0, 12, 4))}
 
 
 # ----------------------------------------------------------------- change the installment plan later (16 Nov, client)

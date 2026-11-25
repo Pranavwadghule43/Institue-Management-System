@@ -77,7 +77,7 @@ export function avatarColor(seed: string) {
   return AV[h % AV.length];
 }
 
-/** Mask all but the last 4 digits (Aadhaar / phone in broad views) */
+/** Mask all but the last 4 digits (phone numbers in broad views) */
 export const mask = (s: string) => s.slice(0, -4).replace(/\d/g, '•') + s.slice(-4);
 
 /** Indian-system amount in words — for receipts */

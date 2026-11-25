@@ -5,9 +5,12 @@ import uuid
 from datetime import date
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
+
+from cryptography.fernet import Fernet, InvalidToken
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import Field, model_validator
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -18,6 +21,7 @@ from ..db import get_db
 from ..errors import AppError, bad, conflict, not_found
 from ..models import AuditLog, Customer, File as FileRow, Service, ServiceBill, ServiceJob, ServiceJobDocument, ServiceJobEvent, ServiceJobItem, ServiceJobStaff, User
 from ..security import CurrentUser, require
+from ..ratelimit import limited
 from .services import get_customer
 
 router = APIRouter(prefix="/service-jobs", tags=["service jobs"])
@@ -222,6 +226,25 @@ def events(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(re
 
 ALLOWED = {"pdf": ("application/pdf", b"%PDF-"), "png": ("image/png", b"\x89PNG\r\n\x1a\n"), "jpg": ("image/jpeg", b"\xff\xd8\xff"), "jpeg": ("image/jpeg", b"\xff\xd8\xff")}
 _SENSITIVE = re.compile(r"aadhaar|aadhar|\bpan\b|bank|form ?16|passbook|cheque|voter|licen[cs]e|passport(?! ?photo)", re.I)
+# 25 Nov 2026: IMS no longer accepts Aadhaar documents. ("aadhaar" stays in _SENSITIVE above so documents uploaded before
+# this change remain restricted until the approved cleanup removes them.) "Udyog Aadhaar" is an MSME business
+# registration, not a person's Aadhaar card, so it is not refused.
+_AADHAAR_WORD = re.compile(r"(?<![a-z])(?P<prev>[a-z]+[^a-z]+)?(?:aadhaa?r|aadhar|adhaar|adhar)(?:card)?(?![a-z])")
+
+
+def mentions_aadhaar(text: str) -> bool:
+    """Whole words only (so names like "Adharsh" pass); "Udyog Aadhaar" (MSME registration) is not a person's Aadhaar."""
+    for m in _AADHAAR_WORD.finditer((text or "").lower()):
+        prev = (m.group("prev") or "").rstrip(" _-.")
+        if prev != "udyog":
+            return True
+    return False
+
+
+def refuse_aadhaar_document(document_type: str | None, filename: str) -> None:
+    for field, value in (("document_type", document_type or ""), ("file", filename)):
+        if mentions_aadhaar(value):
+            raise bad("AADHAAR_NOT_COLLECTED", "Aadhaar documents are no longer collected by IMS. Don't upload them.", field)
 
 
 # Types that are safe for every staff member with service_jobs.view. Anything else - including no type - is restricted.
@@ -251,6 +274,29 @@ def _storage_root() -> Path:
     return Path(settings.file_storage_root).resolve()
 
 
+# 23 Nov (SEC-06): documents are encrypted on disk with the server's data key (DATA_ENC_KEY), so a copy of the
+# storage folder or its backup can't be read without the key. Files stored before this change stay readable: a
+# Fernet token starts with "gAAAAA", which no PDF/JPG/PNG does.
+_FERNET_PREFIX = b"gAAAAA"
+
+
+def _seal(data: bytes) -> bytes:
+    if not settings.data_enc_key:
+        if settings.production:
+            raise AppError(503, "STORAGE_KEY_MISSING", "Document storage is not configured on the server.")
+        return data  # local development without a key
+    return Fernet(settings.data_enc_key).encrypt(data)
+
+
+def _open(raw: bytes) -> bytes:
+    if not raw.startswith(_FERNET_PREFIX):
+        return raw  # stored before encryption was added
+    try:
+        return Fernet(settings.data_enc_key or "").decrypt(raw)
+    except (InvalidToken, ValueError):
+        raise AppError(500, "DOCUMENT_DECRYPT_FAILED", "The stored document could not be read with the configured key.")
+
+
 @router.get("/{code}/documents")
 def list_documents(code: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_jobs.view"))):
     j = get_job(db, code)
@@ -260,11 +306,12 @@ def list_documents(code: str, db: Session = Depends(get_db), user: CurrentUser =
     return [doc_out(d, user, names) for d in docs]
 
 
-@router.post("/{code}/documents", status_code=201)
+@router.post("/{code}/documents", status_code=201, dependencies=[Depends(limited("upload"))])
 def upload_document(code: str, file: UploadFile = File(...), document_type: str | None = Form(None, max_length=100),
                     db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_documents.upload"))):
     j = get_job(db, code)
     original = re.sub(r"[\x00-\x1f\\/]", "_", Path(file.filename or "document").name)[:255]
+    refuse_aadhaar_document(document_type, original)
     ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
     if ext not in ALLOWED:
         raise bad("FILE_TYPE_NOT_ALLOWED", "Only PDF, JPG, JPEG and PNG files are allowed.", "file")
@@ -279,7 +326,7 @@ def upload_document(code: str, file: UploadFile = File(...), document_type: str 
     path = _storage_root() / key
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        path.write_bytes(data)
+        path.write_bytes(_seal(data))
         f = FileRow(storage_key=key, original_name=original, mime_type=mime, size_bytes=len(data), checksum=hashlib.sha256(data).hexdigest(), uploaded_by=user.id)
         db.add(f)
         db.flush()
@@ -302,7 +349,7 @@ def _doc(db: Session, code: str, doc_id: int) -> tuple[ServiceJob, ServiceJobDoc
     return j, d
 
 
-@router.get("/{code}/documents/{doc_id}")
+@router.get("/{code}/documents/{doc_id}", dependencies=[Depends(limited("document"))])
 def download_document(code: str, doc_id: int, db: Session = Depends(get_db), user: CurrentUser = Depends(require("service_jobs.view"))):
     j, d = _doc(db, code, doc_id)
     sensitive = is_sensitive(d)
@@ -311,9 +358,14 @@ def download_document(code: str, doc_id: int, db: Session = Depends(get_db), use
     path = (_storage_root() / d.file.storage_key).resolve()
     if _storage_root() not in path.parents or not path.is_file():
         raise not_found("document file")
+    data = _open(path.read_bytes())
+    if d.file.checksum and hashlib.sha256(data).hexdigest() != d.file.checksum:
+        raise AppError(500, "DOCUMENT_CHANGED", "The stored document doesn't match its checksum.")
     audit(db, user.id, "DOCUMENT_VIEWED", "Service Job", j.job_code, f"{d.file.original_name} opened{' (sensitive)' if sensitive else ''}")
     db.commit()
-    return FileResponse(path, media_type=d.file.mime_type, filename=d.file.original_name)
+    name = quote(d.file.original_name)
+    return Response(data, media_type=d.file.mime_type,
+                    headers={"Content-Disposition": f"attachment; filename=\"{re.sub(r'[^A-Za-z0-9._-]', '_', d.file.original_name)}\"; filename*=UTF-8''{name}"})
 
 
 @router.delete("/{code}/documents/{doc_id}", status_code=204)

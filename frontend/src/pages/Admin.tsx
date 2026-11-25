@@ -18,7 +18,7 @@ function TempPassword({ value, name, onClose }: { value: string | null; name: st
         <div className="modal__icon success"><KeyRound /></div>
         <div>
           <h2>Temporary password for {name}</h2>
-          <p>Shown only once. Hand it over in person; they should change it after signing in (account menu → Change password).</p>
+          <p>Shown only once. Hand it over in person. At their first sign-in they must choose their own password before they can use the app.</p>
         </div>
       </div>
       <div className="modal__body">
@@ -112,7 +112,11 @@ export function Staff() {
                     <td className="id">{s.username}</td>
                     <td>{s.role === 'Admin' ? <Badge tone="primary" icon={<ShieldCheck />}>Admin</Badge> : <Badge tone="neutral">Staff</Badge>}</td>
                     <td className="num">{s.mobile ?? '—'}</td>
-                    <td><StatusDot s={s.status} /></td>
+                    <td>
+                      <StatusDot s={s.status} />
+                      {s.must_change_password && <span className="muted" style={{ display: 'block', fontSize: 11 }}>Temporary password</span>}
+                      {!s.must_change_password && s.recovery_key_set === false && <span className="muted" style={{ display: 'block', fontSize: 11 }}>No recovery key yet</span>}
+                    </td>
                     <td>{s.last_login_at ? ago(s.last_login_at) : '—'}</td>
                     <td className="ta-r">
                       <Menu>

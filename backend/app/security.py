@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import threading
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -62,6 +63,8 @@ class CurrentUser:
     designation: str | None = None
     permissions: frozenset[str] = field(default_factory=frozenset)
     session_id: int | None = None
+    must_change_password: bool = False
+    recovery_key_state: str = "never"  # never | set | used
 
     @property
     def is_admin(self) -> bool:
@@ -75,18 +78,38 @@ def role_label(role: str) -> str:
     return "Admin" if role == "ADMIN" else "Staff"
 
 
+# SEC-12: scrypt at the OWASP cost (N=2^17 -> 128 MiB per hash). Only a few hashes run at once, so a flood of
+# sign-in requests queues instead of exhausting the server's memory. Older hashes (N=2^14) still verify and are
+# upgraded the next time that user signs in.
+_hash_slots = threading.BoundedSemaphore(max(1, settings.password_hash_parallel))
+
+
+def _scrypt(password: str, salt: bytes, n: int, r: int, p: int) -> bytes:
+    with _hash_slots:
+        return hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, maxmem=128 * r * n * p + 1024 * 1024 * 4)
+
+
 def hash_password(password: str) -> str:
-    salt = os.urandom(16)
-    dk = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
-    return "scrypt$16384$8$1$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(dk).decode()
+    salt, n = os.urandom(16), settings.password_hash_n
+    dk = _scrypt(password, salt, n, 8, 1)
+    return f"scrypt${n}$8$1$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(dk).decode()
 
 
 def verify_password(password: str, stored: str | None) -> bool:
     try:
         algo, n, r, p, salt, dk = (stored or "").split("$")
-        got = hashlib.scrypt(password.encode(), salt=base64.b64decode(salt), n=int(n), r=int(r), p=int(p))
-        return algo == "scrypt" and hmac.compare_digest(got, base64.b64decode(dk))
+        if algo != "scrypt" or int(n) > 2**20 or int(r) > 16 or int(p) > 4:
+            return False
+        got = _scrypt(password, base64.b64decode(salt), int(n), int(r), int(p))
+        return hmac.compare_digest(got, base64.b64decode(dk))
     except ValueError:
+        return False
+
+
+def needs_rehash(stored: str | None) -> bool:
+    try:
+        return int((stored or "").split("$")[1]) < settings.password_hash_n
+    except (IndexError, ValueError):
         return False
 
 
@@ -124,7 +147,13 @@ def token_hash(token: str) -> str:
 _bearer = HTTPBearer(auto_error=False)
 
 
-def get_current_user(cred: HTTPAuthorizationCredentials | None = Depends(_bearer), db: Session = Depends(get_db)) -> CurrentUser:
+# While an account must first change its temporary password (SEC-05), only these endpoints answer; everything else
+# returns 403 PASSWORD_CHANGE_REQUIRED so the app can show the Change password screen.
+RESTRICTED_ALLOWED = ("/auth/me", "/auth/logout", "/auth/change-password")
+
+
+def get_current_user(request: Request, cred: HTTPAuthorizationCredentials | None = Depends(_bearer),
+                     db: Session = Depends(get_db)) -> CurrentUser:
     if cred is None:
         raise AppError(401, "UNAUTHENTICATED", "Sign in to continue.")
     # Session, user and permission codes in ONE round trip (performance): one row per permission, or a single row
@@ -147,7 +176,10 @@ def get_current_user(cred: HTTPAuthorizationCredentials | None = Depends(_bearer
     if s.last_activity_at is None or t - s.last_activity_at > timedelta(seconds=60):  # at most one write per minute per session
         s.last_activity_at = t
         db.commit()
-    return CurrentUser(u.id, u.username, u.full_name, u.role, u.designation, perms, s.id)
+    if u.must_change_password and request.url.path.removeprefix(settings.api_v1_prefix) not in RESTRICTED_ALLOWED:
+        raise AppError(403, "PASSWORD_CHANGE_REQUIRED", "Change your temporary password to continue.")
+    return CurrentUser(u.id, u.username, u.full_name, u.role, u.designation, perms, s.id,
+                       bool(u.must_change_password), recovery_key_state(u))
 
 
 def require(perm: str):
@@ -178,9 +210,14 @@ def revoke_sessions(db: Session, user_id: int) -> None:
 
 
 def me_payload(u: CurrentUser) -> dict:
-    return {"id": u.id, "username": u.username, "full_name": u.full_name, "role": role_label(u.role),
-            "designation": u.designation, "permissions": sorted(ALL_CODES if u.is_admin else u.permissions - ADMIN_ONLY),
-            "whatsapp_document_delivery": whatsapp_delivery_enabled()}
+    out = {"id": u.id, "username": u.username, "full_name": u.full_name, "role": role_label(u.role),
+           "designation": u.designation, "permissions": sorted(ALL_CODES if u.is_admin else u.permissions - ADMIN_ONLY),
+           "whatsapp_document_delivery": whatsapp_delivery_enabled(), "must_change_password": u.must_change_password}
+    # Every account keeps a one-time recovery key for a forgotten password. Without one (first sign-in, or after the
+    # Admin reset the password) the app shows the key once, right after sign-in.
+    out["recovery_key_set"] = u.recovery_key_state == "set"
+    out["recovery_key_reminder"] = u.recovery_key_state != "set"
+    return out
 
 
 # ----------------------------------------------------------------- auth routes
@@ -201,49 +238,178 @@ class PasswordIn(In):
 IP_FAILURE_LIMIT = 20  # failed sign-ins per IP per lock window, across all usernames
 
 
+def wait_seconds(failures: int) -> int:
+    """SEC-03: no hard lock. From the 5th wrong password on, each new try must wait longer:
+    30 s, 1 min, 2 min, 4 min, 8 min, then 15 min at most (LOGIN_WAIT_SECONDS / LOGIN_LOCK_MINUTES)."""
+    extra = max(0, failures - settings.login_max_attempts)
+    return min(settings.login_wait_seconds * 2 ** min(extra, 20), settings.login_lock_minutes * 60)
+
+
+def _wait_message(seconds: int) -> str:
+    when = f"{seconds} seconds" if seconds < 90 else f"{round(seconds / 60)} minutes"
+    return f"Too many wrong attempts. Try again in {when}."
+
+
+def _address_blocked(db: Session, ip: str | None, username: str, since) -> bool:
+    """SEC-03: after 20 failures from one address, only the names that already failed from it are stopped, so wrong
+    tries on other names can't keep the Admin (or anyone else on the same network) out."""
+    if not ip:
+        return False
+    failures = select(func.count()).where(LoginAttempt.ip_address == ip, LoginAttempt.succeeded.is_(False), LoginAttempt.attempted_at > since)
+    if (db.scalar(failures) or 0) < IP_FAILURE_LIMIT:
+        return False
+    # A successful sign-in or recovery-key reset proves the owner: only failures after it count against the name.
+    last_ok = db.scalar(select(func.max(LoginAttempt.attempted_at)).where(
+        LoginAttempt.ip_address == ip, LoginAttempt.username == username[:100], LoginAttempt.succeeded.is_(True)))
+    after = max(since, last_ok) if last_ok else since
+    return bool(db.scalar(failures.where(LoginAttempt.username == username[:100], LoginAttempt.attempted_at > after)))
+
+
 @router.post("/login")
 def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     username = body.username.lower()
     # Row lock (QA-04): parallel sign-ins for one account run one at a time, so every wrong password is counted
-    # and the 5-try lockout can't be bypassed by sending guesses simultaneously. Released at commit/rollback.
+    # and the wait can't be bypassed by sending guesses simultaneously. Released at commit/rollback.
     u = db.scalars(select(User).where(User.username == username, User.deleted_at.is_(None)).with_for_update()).first()
     ip = request.client.host if request.client else None
+    t = now()
 
-    def fail(status=401, code="INVALID_CREDENTIALS", msg="Incorrect username or password."):
+    def fail(status=401, code="INVALID_CREDENTIALS", msg="Incorrect username or password.", headers=None):
         db.add(LoginAttempt(username=username[:100], succeeded=False, ip_address=ip))
         db.commit()
-        raise AppError(status, code, msg)
+        raise AppError(status, code, msg, headers=headers)
 
-    window = now() - timedelta(minutes=settings.login_lock_minutes)
-    if ip and (db.scalar(select(func.count()).where(LoginAttempt.ip_address == ip, LoginAttempt.succeeded.is_(False),
-                                                    LoginAttempt.attempted_at > window)) or 0) >= IP_FAILURE_LIMIT:
-        raise AppError(429, "TOO_MANY_ATTEMPTS", "Too many failed sign-ins from this device. Try again later.")
-    if u is not None and u.is_active and u.locked_until and u.locked_until > now():
-        fail(429, "LOGIN_LOCKED", "Too many attempts. Sign-in is paused, try again later.")
+    if _address_blocked(db, ip, username, t - timedelta(minutes=settings.login_lock_minutes)):
+        raise AppError(429, "TOO_MANY_ATTEMPTS", "Too many failed sign-ins from this device. Try again later.",
+                       headers={"Retry-After": str(settings.login_lock_minutes * 60)})
+    active = u is not None and u.is_active
+    if active and u.locked_until and u.locked_until > t:
+        # During the wait nothing is checked, so the wait can't be used to test passwords.
+        seconds = max(1, int((u.locked_until - t).total_seconds()))
+        fail(429, "LOGIN_LOCKED", _wait_message(seconds), headers={"Retry-After": str(seconds)})
     with timed_operation("password_verify"):
-        valid = verify_password(body.password, u.password_hash if u is not None and u.is_active else DUMMY_HASH)
-    if u is None or not u.is_active:
+        valid = verify_password(body.password, u.password_hash if active else DUMMY_HASH)
+    if not active:
         fail()
     if not valid:
         u.failed_attempts += 1
         if u.failed_attempts >= settings.login_max_attempts:
-            u.locked_until, u.failed_attempts = now() + timedelta(minutes=settings.login_lock_minutes), 0
-            audit(db, u.id, "LOGIN_LOCKED", "Auth", u.username, f"{settings.login_max_attempts} failed attempts, account locked")
+            seconds = wait_seconds(u.failed_attempts)
+            u.locked_until = t + timedelta(seconds=seconds)
+            audit(db, u.id, "LOGIN_LOCKED", "Auth", u.username, f"{u.failed_attempts} failed attempts, next try in {seconds} s")
         fail()
+    if needs_rehash(u.password_hash):
+        u.password_hash = hash_password(body.password)  # SEC-12: upgrade older, cheaper hashes on sign-in
     token = secrets.token_urlsafe(32)
-    signed_in_at = now()
+    signed_in_at = t
     expires = signed_in_at + timedelta(hours=settings.session_hours)
     # The user row remains locked from the initial lookup. Group disjoint writes and
     # the permission lookup in one round trip. A failure rolls back the whole login.
+    db.flush()
     updates = update(User.__table__).where(User.id == u.id).values(failed_attempts=0, locked_until=None, last_login_at=signed_in_at)
     session = insert(UserSession.__table__).values(user_id=u.id, token_hash=token_hash(token), expires_at=expires, last_activity_at=signed_in_at)
     attempt = insert(LoginAttempt.__table__).values(username=username, succeeded=True, ip_address=ip)
     entry = insert(AuditLog.__table__).values(**audit_values(u.id, "LOGIN_SUCCESS", "Auth", u.username, "Signed in"))
     permissions = select(Permission.code).join(UserPermission).where(UserPermission.user_id == u.id).add_cte(
         updates.cte("user_login"), session.cte("new_session"), attempt.cte("successful_attempt"), entry.cte("audit_login"))
-    cu = CurrentUser(u.id, u.username, u.full_name, u.role, u.designation, frozenset(db.scalars(permissions)))
+    cu = CurrentUser(u.id, u.username, u.full_name, u.role, u.designation, frozenset(db.scalars(permissions)), None,
+                     bool(u.must_change_password), recovery_key_state(u))
     db.commit()
     return {"token": token, "token_type": "bearer", "expires_at": expires, "user": me_payload(cu)}
+
+
+# ----------------------------------------------------------------- forgotten password: recovery key
+
+# Every account (Admin and Staff) keeps a one-time recovery key, shown once in the app right after sign-in and stored
+# only as a hash. With it, a forgotten password is reset from the sign-in page; the reset hands out a new key at once.
+# No key either? The Admin resets a staff password (Staff page); the server console resets any account.
+RECOVERY_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
+
+
+def recovery_key_state(u: User) -> str:
+    """set = a usable key exists; anything else means the app should hand out a new one."""
+    if not u.recovery_key_hash:
+        return "never"
+    return "set" if u.recovery_key_hash.startswith("scrypt$") else "used"
+
+
+def new_recovery_key() -> str:
+    raw = "".join(secrets.choice(RECOVERY_ALPHABET) for _ in range(25))  # 25 x log2(31) = 124 bits
+    return "-".join(raw[i:i + 5] for i in range(0, 25, 5))
+
+
+def _clean_key(key: str) -> str:
+    return "".join(ch for ch in key.upper() if ch in RECOVERY_ALPHABET)
+
+
+class RecoveryKeyIn(In):
+    current_password: Str(200)
+
+
+@router.post("/recovery-key")
+def create_recovery_key(body: RecoveryKeyIn, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Shown once. A new key replaces the old one. Any account, after confirming its password."""
+    u = db.scalars(select(User).where(User.id == user.id).with_for_update()).one()
+    if not verify_password(body.current_password, u.password_hash):
+        raise AppError(400, "INVALID_CURRENT_PASSWORD", "Current password is incorrect.", {"current_password": "Current password is incorrect."})
+    key = new_recovery_key()
+    u.recovery_key_hash = hash_password(_clean_key(key))
+    audit(db, u.id, "RECOVERY_KEY_CREATED", "Auth", u.username, "Recovery key created (any earlier key no longer works)")
+    db.commit()
+    return {"recovery_key": key}
+
+
+class RecoverIn(In):
+    username: Str(100)
+    recovery_key: Str(60)
+    new_password: Str(128, 8)
+
+
+@router.post("/recover")
+def recover(body: RecoverIn, request: Request, db: Session = Depends(get_db)):
+    """Forgotten password: username + recovery key + new password. The key works once, so the answer carries the
+    account's next key (shown once on the sign-in page); all sessions end.
+    Wrong keys count like wrong passwords (same wait and per-address limit). The key is long enough (124 bits) that
+    it also works during a wait, so someone guessing the password can't keep the Admin out."""
+    username = body.username.lower()
+    u = db.scalars(select(User).where(User.username == username, User.deleted_at.is_(None)).with_for_update()).first()
+    ip = request.client.host if request.client else None
+    t = now()
+    usable = u is not None and u.is_active and recovery_key_state(u) == "set"
+    valid = verify_password(_clean_key(body.recovery_key), u.recovery_key_hash if usable else DUMMY_HASH)
+    if not (usable and valid):
+        db.add(LoginAttempt(username=username[:100], succeeded=False, ip_address=ip))
+        if u is not None and u.is_active:
+            u.failed_attempts += 1
+            if u.failed_attempts >= settings.login_max_attempts:
+                u.locked_until = t + timedelta(seconds=wait_seconds(u.failed_attempts))
+        db.commit()
+        raise AppError(400, "RECOVERY_FAILED", "Username or recovery key is incorrect.")
+    if problem := password_problem(body.new_password, u.username):
+        db.rollback()
+        raise AppError(400, "PASSWORD_TOO_WEAK", problem, {"new_password": problem})
+    next_key = new_recovery_key()
+    u.password_hash = hash_password(body.new_password)
+    u.recovery_key_hash, u.must_change_password, u.failed_attempts, u.locked_until = hash_password(_clean_key(next_key)), False, 0, None
+    revoke_sessions(db, u.id)
+    db.add(LoginAttempt(username=username[:100], succeeded=True, ip_address=ip))
+    audit(db, u.id, "PASSWORD_RECOVERED", "Auth", u.username, "Password reset with the recovery key; new key issued; all sessions signed out")
+    db.commit()
+    return {"recovery_key": next_key}
+
+
+def reset_password_console(db: Session, username: str, password: str) -> User:
+    """Last resort on the server: python -m app.cli reset-password USERNAME (password prompted, never echoed)."""
+    u = db.scalars(select(User).where(User.username == username.lower(), User.deleted_at.is_(None))).first()
+    if u is None:
+        raise SystemExit(f"No account named {username}.")
+    if problem := password_problem(password, u.username):
+        raise SystemExit(problem)
+    u.password_hash, u.failed_attempts, u.locked_until, u.must_change_password = hash_password(password), 0, None, False
+    revoke_sessions(db, u.id)
+    audit(db, u.id, "PASSWORD_RESET_CONSOLE", "Auth", u.username, "Password reset from the server console; all sessions signed out")
+    db.commit()
+    return u
 
 
 @router.post("/logout", status_code=204)
@@ -269,6 +435,7 @@ def change_password(body: PasswordIn, user: CurrentUser = Depends(get_current_us
     if problem := password_problem(body.new_password, u.username):
         raise AppError(400, "PASSWORD_TOO_WEAK", problem, {"new_password": problem})
     u.password_hash = hash_password(body.new_password)
+    u.must_change_password = False
     for s in db.scalars(select(UserSession).where(UserSession.user_id == u.id, UserSession.revoked_at.is_(None), UserSession.id != user.session_id)):
         s.revoked_at = now()  # other devices are signed out; this one stays
     audit(db, u.id, "PASSWORD_CHANGED", "Auth", u.username, "Password changed")

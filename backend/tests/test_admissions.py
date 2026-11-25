@@ -20,10 +20,8 @@ def test_schedule_mirrors_frontend_rule():
 def test_enquiry_validation_and_ids(admin, course):
     r = admin.post("/enquiries", json={"student_name": "X", "mobile": "12345"})
     assert r.status_code == 422 and "mobile" in r.json()["error"]["field_errors"]
-    r = admin.post("/enquiries", json={"student_name": "X", "mobile": "9876543210", "aadhaar": "1234"})
-    assert r.status_code == 422 and "aadhaar" in r.json()["error"]["field_errors"]
-    e = ok(admin.post("/enquiries", json={"student_name": "Riya", "mobile": "+91 98765 43210", "aadhaar": "2345 6789 0123"}), 201)
-    assert e["code"] == f"EQ-{YEAR}-0001" and e["mobile"] == "9876543210" and e["aadhaar_masked"] == "XXXX XXXX 0123"
+    e = ok(admin.post("/enquiries", json={"student_name": "Riya", "mobile": "+91 98765 43210"}), 201)
+    assert e["code"] == f"EQ-{YEAR}-0001" and e["mobile"] == "9876543210" and not any("aadhaar" in k for k in e)
     assert ok(admin.post("/enquiries", json={"student_name": "Kavya", "mobile": "9876543211"}), 201)["code"] == f"EQ-{YEAR}-0002"
 
 
@@ -83,8 +81,8 @@ def test_capacity_is_a_warning_not_a_block(admin, course):
 
 def test_student_edit_status_archive_and_change_slot(admin, course, student, make_staff):
     code = student["student"]["code"]
-    s = ok(admin.patch(f"/students/{code}", json={"whatsapp_number": "9000000001", "address": "New address", "aadhaar": "234567890123"}))
-    assert s["whatsapp_number"] == "9000000001" and s["aadhaar_masked"] == "XXXX XXXX 0123"
+    s = ok(admin.patch(f"/students/{code}", json={"whatsapp_number": "9000000001", "address": "New address"}))
+    assert s["whatsapp_number"] == "9000000001" and not any("aadhaar" in k for k in s)
     assert admin.patch(f"/students/{code}", json={"full_name": None}).status_code == 400
     slot2 = ok(admin.post("/time-slots", json={"course_id": course["id"], "name": "DCA Evening", "start_time": "17:00", "end_time": "18:30", "capacity": 30}), 201)
     moved = ok(admin.post(f"/students/{code}/change-time-slot", json={"time_slot_id": slot2["id"], "reason": "Evening suits"}))
@@ -130,13 +128,21 @@ def test_courses_subtypes_slots(admin, course, student):
     assert listed["active_students"] == 1 and listed["time_slots"] == 1
 
 
-def test_aadhaar_reveal_is_admin_only_and_audited(admin, course, make_staff):
-    e = ok(admin.post("/enquiries", json={"student_name": "Riya", "mobile": "9876543219", "aadhaar": "234567890123", "course_id": course["id"]}), 201)
-    s = ok(admin.post(f"/enquiries/{e['code']}/convert", json=admission_body(course, full_name="Riya Singh")), 201)["student"]
-    assert s["aadhaar_masked"] == "XXXX XXXX 0123"  # copied from the enquiry
-    staff = make_staff(["students.view", "students.edit"])
-    assert staff.get(f"/students/{s['code']}/aadhaar").status_code == 403
-    assert ok(admin.get(f"/students/{s['code']}/aadhaar"))["aadhaar"] == "2345 6789 0123"
-    assert ok(admin.get("/students", params={"q": "234567890123"}))["total"] == 1  # exact hash search
-    logs = ok(admin.get("/audit", params={"action": "AADHAAR_REVEALED"}))["items"]
-    assert len(logs) == 1 and "2345" not in str(logs)
+def test_aadhaar_is_no_longer_collected_anywhere(admin, course, enquiry):
+    """25 Nov 2026 (client decision, DPDP): no Aadhaar field is accepted, stored, shown, searched or revealed."""
+    for spelling in ("aadhaar", "aadhar", "adhar", "aadhaar_number", "aadhar_number", "Aadhaar", "uidai_number"):
+        r = admin.post("/enquiries", json={"student_name": "Riya", "mobile": "9876543219", spelling: "234567890123"})
+        assert r.status_code == 422, spelling
+        err = r.json()["error"]
+        assert "Aadhaar is no longer collected" in str(err) and "234567890123" not in r.text, spelling
+    code = enquiry["code"]
+    assert admin.patch(f"/enquiries/{code}", json={"aadhaar": "234567890123"}).status_code == 422
+    s = ok(admin.post(f"/enquiries/{code}/convert", json=admission_body(course, full_name="Riya Singh")), 201)["student"]
+    assert not any("aadhaar" in k for k in s)
+    assert admin.post(f"/enquiries/{code}/convert", json=admission_body(course, aadhaar="234567890123")).status_code == 422
+    assert admin.patch(f"/students/{s['code']}", json={"aadhaar": "234567890123"}).status_code == 422
+    assert admin.get(f"/students/{s['code']}/aadhaar").status_code == 404  # reveal endpoints are gone
+    assert admin.get(f"/enquiries/{code}/aadhaar").status_code == 404
+    assert ok(admin.get("/students", params={"q": "0123"}))["total"] == 0  # no last-4 Aadhaar search
+    listed = ok(admin.get("/students"))["items"][0]
+    assert not any("aadhaar" in k for k in listed)

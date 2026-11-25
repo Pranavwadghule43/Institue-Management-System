@@ -1,6 +1,6 @@
 from zoneinfo import ZoneInfo
 
-from pydantic import SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,9 +22,14 @@ class Settings(BaseSettings):
     session_hours: int = 12
     session_idle_minutes: int = 30
     login_max_attempts: int = 5
-    login_lock_minutes: int = 15
-    aadhaar_enc_key: str | None = None  # Fernet key (urlsafe base64, 32 bytes)
-    aadhaar_hash_key: str | None = None  # HMAC key for exact-match Aadhaar search
+    login_lock_minutes: int = 15  # longest wait after repeated wrong passwords (the wait grows from login_wait_seconds)
+    login_wait_seconds: int = 30
+    password_hash_n: int = 2**17  # scrypt cost (OWASP: N=2^17, r=8, p=1 -> 128 MiB per hash)
+    password_hash_parallel: int = 2  # at most this many hashes at once, so sign-in floods can't exhaust memory
+    # Data-encryption key (Fernet, urlsafe base64, 32 bytes) for uploaded documents. 25 Nov 2026 (DPDP, Aadhaar removed):
+    # IMS no longer collects Aadhaar, so the key is now named DATA_ENC_KEY; the old name AADHAAR_ENC_KEY is still read so
+    # existing servers keep working and older encrypted files stay readable. AADHAAR_HASH_KEY is no longer used.
+    data_enc_key: str | None = Field(None, validation_alias=AliasChoices("data_enc_key", "aadhaar_enc_key"))
     whatsapp_enabled: bool = False
     whatsapp_access_token: SecretStr = SecretStr("")
     whatsapp_app_secret: SecretStr = SecretStr("")
@@ -55,7 +60,26 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-if settings.production:  # fail fast instead of discovering missing secrets on the first Aadhaar entry
-    missing = [k for k in ("aadhaar_enc_key", "aadhaar_hash_key") if not getattr(settings, k)]
-    if missing:
-        raise RuntimeError(f"Production start refused: set {', '.join(m.upper() for m in missing)}")
+def production_problems(s: Settings) -> list[str]:
+    """Settings that make a production server unsafe (23 Nov security patch SEC-08). Empty list = OK."""
+    problems = [] if s.data_enc_key else ["set DATA_ENC_KEY (documents are encrypted with it)"]
+    for origin in s.origins:
+        host = origin.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
+        if not origin.lower().startswith("https://") or host in ("localhost", "127.0.0.1", "0.0.0.0"):
+            problems.append(f"FRONTEND_ORIGIN must be the real https:// web address (got {origin})")
+    if not s.origins:
+        problems.append("set FRONTEND_ORIGIN to the real https:// web address")
+    if s.expose_docs:
+        problems.append("EXPOSE_DOCS must be off in production")
+    if s.password_hash_n < 2**17:
+        problems.append("PASSWORD_HASH_N must be at least 131072 in production")
+    db = s.database_url.lower()
+    local_db = any(h in db for h in ("@localhost", "@127.0.0.1", "host=/", "@/"))
+    if not local_db and "sslmode=verify-full" not in db:
+        problems.append("DATABASE_URL must end with ?sslmode=verify-full&sslrootcert=<CA file> (SEC-13)")
+    return problems
+
+
+if settings.production:  # fail fast instead of discovering an unsafe setting after go-live
+    if problems := production_problems(settings):
+        raise RuntimeError("Production start refused: " + "; ".join(problems))

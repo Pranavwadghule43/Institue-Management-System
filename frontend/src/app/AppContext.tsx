@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { CheckCircle2, Info, X, XCircle } from 'lucide-react';
-import { api, getToken, setToken, setUnauthorizedHandler } from '../api/client';
+import { api, getToken, setRestrictedHandler, setToken, setUnauthorizedHandler } from '../api/client';
 import type { Me, Role } from '../api/types';
 
 /* Permission catalog — mirrors the backend (app/security.py). Admin has all.
@@ -18,7 +18,10 @@ export const ADMIN_ONLY = new Set<string>(PERMISSIONS.find((g) => g.group === 'A
 
 type ToastKind = 'success' | 'error' | 'info';
 interface Toast { id: number; kind: ToastKind; title: string; body?: string }
-export interface User { id: number; name: string; username: string; role: Role; designation: string; permissions: string[]; whatsappDocumentDelivery: boolean }
+export interface User {
+  id: number; name: string; username: string; role: Role; designation: string; permissions: string[]; whatsappDocumentDelivery: boolean;
+  mustChangePassword: boolean; recoveryKeySet: boolean; recoveryKeyReminder: boolean;
+}
 
 interface Ctx {
   role: Role;
@@ -40,8 +43,14 @@ export const useApp = () => useContext(AppCtx);
 const toUser = (m: Me): User => ({
   id: m.id, name: m.full_name, username: m.username, role: m.role, designation: m.designation ?? '',
   permissions: m.permissions, whatsappDocumentDelivery: m.whatsapp_document_delivery ?? true,
+  mustChangePassword: !!m.must_change_password,
+  recoveryKeySet: m.recovery_key_set ?? true,
+  recoveryKeyReminder: !!m.recovery_key_reminder,
 });
-const NOBODY: User = { id: 0, name: '', username: '', role: 'Staff', designation: '', permissions: [], whatsappDocumentDelivery: false };
+const NOBODY: User = {
+  id: 0, name: '', username: '', role: 'Staff', designation: '', permissions: [], whatsappDocumentDelivery: false,
+  mustChangePassword: false, recoveryKeySet: true, recoveryKeyReminder: false,
+};
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -72,6 +81,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setUnauthorizedHandler(() => {
       if (getToken()) toast('info', 'Signed out', 'Your session ended. Please sign in again.');
       clear();
+    });
+    setRestrictedHandler(() => {
+      refreshMe().catch(() => {});
     });
     if (getToken()) refreshMe().catch(clear).finally(() => setBooting(false));
   }, [clear, refreshMe, toast]);

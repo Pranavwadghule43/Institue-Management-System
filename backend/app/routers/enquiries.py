@@ -8,13 +8,13 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload
 
 from ..common import (
-    In, Mobile, OptAadhaar, OptEmail, OptStr, OptText, Paging, Str, aadhaar_columns, aadhaar_decrypt, aadhaar_mask, apply_changes, audit,
+    In, Mobile, OptEmail, OptStr, OptText, Paging, Str, apply_changes, audit,
     bounds, like, next_code, paginate, paging, today, user_names, user_ref,
 )
 from ..db import get_db
 from ..errors import conflict, not_found
 from ..models import Enquiry, EnquiryActivity, Student, User
-from ..security import CurrentUser, require, require_admin
+from ..security import CurrentUser, require
 from .students import AdmissionIn, admit, check_subtypes, subtypes_out, wanted_subtypes
 
 router = APIRouter(prefix="/enquiries", tags=["enquiries"])
@@ -28,7 +28,6 @@ class EnquiryIn(In):
     email: OptEmail = None
     address: OptText = None
     reference: OptText = None
-    aadhaar: OptAadhaar = None
     course_id: int | None = None
     course_subtype_id: int | None = None
     course_subtype_ids: list[int] | None = Field(None, max_length=20)  # 16 Nov: several sub-types
@@ -41,7 +40,6 @@ class EnquiryPatch(In):
     email: OptEmail = None
     address: OptText = None
     reference: OptText = None
-    aadhaar: OptAadhaar = None
     course_id: int | None = None
     course_subtype_id: int | None = None
     course_subtype_ids: list[int] | None = Field(None, max_length=20)
@@ -61,7 +59,7 @@ def enquiry_out(db: Session, e: Enquiry, names: dict | None = None, student_code
                     else db.scalar(select(Student.student_code).where(Student.enquiry_id == e.id)))
     c = e.course
     return {"code": e.enquiry_code, "student_name": e.student_name, "guardian_name": e.guardian_name, "mobile": e.mobile, "email": e.email,
-            "address": e.address, "reference": e.reference, "aadhaar_masked": aadhaar_mask(e.aadhaar_last4),
+            "address": e.address, "reference": e.reference,
             "course": {"id": c.id, "code": c.code, "name": c.name} if c else None, "course_subtype": subtypes_out(e.subtypes[:1])[0] if e.subtypes else None,
             "course_subtypes": subtypes_out(e.subtypes),
             "status": e.status, "handling_staff": user_ref(names, e.handling_staff_id), "created_by": user_ref(names, e.created_by),
@@ -111,9 +109,8 @@ def enquiry_summary(db: Session = Depends(get_db), _: CurrentUser = Depends(requ
 @router.post("", status_code=201)
 def create_enquiry(body: EnquiryIn, db: Session = Depends(get_db), user: CurrentUser = Depends(require("students.create"))):
     chosen = check_subtypes(db, body.course_id, wanted_subtypes(body.course_subtype_ids, body.course_subtype_id))
-    data = body.model_dump(exclude={"aadhaar", "course_subtype_ids"}) | {"course_subtype_id": chosen[0].id if chosen else None}
-    e = Enquiry(subtypes=chosen, enquiry_code=next_code(db, "ENQUIRY"), status="New", handling_staff_id=user.id, created_by=user.id,
-                **data, **aadhaar_columns(body.aadhaar))
+    data = body.model_dump(exclude={"course_subtype_ids"}) | {"course_subtype_id": chosen[0].id if chosen else None}
+    e = Enquiry(subtypes=chosen, enquiry_code=next_code(db, "ENQUIRY"), status="New", handling_staff_id=user.id, created_by=user.id, **data)
     db.add(e)
     db.flush()
     db.add(EnquiryActivity(enquiry_id=e.id, actor_id=user.id, old_status=None, new_status="New", note=None))
@@ -144,14 +141,7 @@ def update_enquiry(code: str, body: EnquiryPatch, db: Session = Depends(get_db),
         old_names = ", ".join(x.name for x in e.subtypes) or "-"
         data["course_subtype_id"] = chosen[0].id if chosen else None
         e.subtypes = chosen
-    aadhaar_changed = "aadhaar" in data
-    if aadhaar_changed:
-        data.update(aadhaar_columns(data.pop("aadhaar")))
     before, after = apply_changes(e, data)
-    for k in ("aadhaar_ciphertext", "aadhaar_lookup_hash", "aadhaar_last4"):
-        before.pop(k, None), after.pop(k, None)
-    if aadhaar_changed:
-        before["aadhaar"], after["aadhaar"] = "(hidden)", "changed"
     if old_names is not None:
         before.pop("course_subtype_id", None), after.pop("course_subtype_id", None)
         before["sub_types"], after["sub_types"] = old_names, ", ".join(x.name for x in chosen) or "-"
@@ -196,13 +186,3 @@ def convert(code: str, body: AdmissionIn, idempotency_key: str | None = Header(N
             db: Session = Depends(get_db), user: CurrentUser = Depends(require("students.create"))):
     return admit(db, code, body, user, idempotency_key)
 
-
-@router.get("/{code}/aadhaar")
-def reveal_enquiry_aadhaar(code: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require_admin)):
-    e = _get(db, code)
-    if not e.aadhaar_ciphertext:
-        raise not_found("aadhaar")
-    value = aadhaar_decrypt(e.aadhaar_ciphertext)
-    audit(db, user.id, "AADHAAR_REVEALED", "Enquiry", e.enquiry_code, f"Aadhaar revealed for enquiry {e.enquiry_code}")
-    db.commit()
-    return {"aadhaar": " ".join(value[i:i + 4] for i in range(0, 12, 4))}

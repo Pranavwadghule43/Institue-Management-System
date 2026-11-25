@@ -2,6 +2,8 @@
 
   python -m app.cli seed                      # permission catalog + initial expense categories
   python -m app.cli create-admin USER "Name"  # the single Admin account (password prompted, never echoed)
+  python -m app.cli reset-password USER       # last resort for a forgotten password (prompted, never echoed)
+  python -m app.cli check-production          # lists settings that would stop a production start (SEC-08)
 """
 import getpass
 import sys
@@ -11,7 +13,7 @@ from sqlalchemy import func, select
 from .db import SessionLocal
 from .models import ExpenseCategory, InstituteSettings, User
 from .routers.admin import ensure_permission_catalog
-from .security import MIN_PASSWORD_LENGTH, hash_password, password_problem
+from .security import MIN_PASSWORD_LENGTH, hash_password, password_problem, reset_password_console
 
 EXPENSE_CATEGORIES = ["Rent", "Salary", "Electricity", "Internet & Phone", "Stationery", "Printer & Toner", "Maintenance", "Marketing",
                       "Refreshments", "Miscellaneous", "Other"]
@@ -62,6 +64,17 @@ def main(argv: list[str]) -> None:
             if pw != getpass.getpass("Repeat password: "):
                 raise SystemExit("Passwords must match.")
             print("Created Admin", create_admin(db, argv[1], argv[2], pw).username)
+        elif argv[:1] == ["reset-password"] and len(argv) == 2:
+            pw = getpass.getpass(f"New password for {argv[1]} (min {MIN_PASSWORD_LENGTH} chars): ")
+            if pw != getpass.getpass("Repeat password: "):
+                raise SystemExit("Passwords must match.")
+            u = reset_password_console(db, argv[1], pw)
+            print(f"Password changed for {u.username}. All its sessions were signed out.")
+        elif argv[:1] == ["check-production"]:
+            from .config import production_problems, settings
+            problems = production_problems(settings)
+            print("Production settings OK." if not problems else "Fix before going live:\n- " + "\n- ".join(problems))
+            raise SystemExit(1 if problems else 0)
         else:
             print(__doc__)
 

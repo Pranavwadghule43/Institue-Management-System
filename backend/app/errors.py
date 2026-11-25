@@ -41,8 +41,9 @@ def log_failure(logger: logging.Logger, context: str, e: Exception) -> None:
 
 
 class AppError(Exception):
-    def __init__(self, status: int, code: str, message: str, field_errors: dict | None = None):
+    def __init__(self, status: int, code: str, message: str, field_errors: dict | None = None, headers: dict | None = None):
         self.status, self.code, self.message, self.field_errors = status, code, message, field_errors or {}
+        self.headers = headers
 
 
 def not_found(what: str) -> AppError:
@@ -93,7 +94,7 @@ def _body(code: str, message: str, field_errors: dict | None = None) -> dict:
 def install(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app(_: Request, e: AppError):
-        return JSONResponse(_body(e.code, e.message, e.field_errors), status_code=e.status)
+        return JSONResponse(_body(e.code, e.message, e.field_errors), status_code=e.status, headers=e.headers)
 
     @app.exception_handler(IntegrityError)
     async def _integrity(_: Request, e: IntegrityError):

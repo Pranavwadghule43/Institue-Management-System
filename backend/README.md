@@ -9,7 +9,7 @@ Development and client testing use the shared Supabase PostgreSQL project `tiusj
 cd backend
 uv venv -p 3.11 .venv && uv pip install -p .venv/Scripts/python.exe -e ".[dev]"
 # without uv:  py -3.11 -m venv .venv  &&  .venv/Scripts/python -m pip install -e ".[dev]"
-cp .env.example .env            # fill DATABASE_URL, AADHAAR_* keys
+cp .env.example .env            # fill DATABASE_URL, DATA_ENC_KEY
 .venv/Scripts/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 .venv/Scripts/python -m pytest -p no:logging               # local throwaway Postgres, never the shared DB
 ```
@@ -34,14 +34,14 @@ a fifth staff account returns `409 STAFF_ACCOUNT_LIMIT_REACHED`, and disabled st
 
 ## Production checklist
 
-- `APP_ENV=production` (docs off, HSTS on). Startup refuses to run without `AADHAAR_ENC_KEY` / `AADHAAR_HASH_KEY`.
+- `APP_ENV=production` (docs off, HSTS on). Startup refuses to run without `DATA_ENC_KEY` (the old name `AADHAAR_ENC_KEY` is still accepted).
 - `FRONTEND_ORIGIN` = the real web origin(s), comma-separated. Bearer tokens only, no cookies.
 - Use a dedicated application database role for the hosted client-facing environment. Grant the DML, sequence and
   function privileges the API needs and matching RLS policies. Reserve schema changes for a separate migration role.
 - Run behind HTTPS: `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --proxy-headers --forwarded-allow-ips <proxy ip>`.
 - Sessions: 12 h absolute, 30 min idle (`SESSION_HOURS`, `SESSION_IDLE_MINUTES`); 5 wrong passwords lock an account for 15 min;
   20 failures from one IP in 15 min block that IP. Users change their own password from the account menu.
-- Every response carries security headers and `Cache-Control: no-store` on the API; logs never contain bodies, tokens or Aadhaar.
+- Every response carries security headers and `Cache-Control: no-store` on the API; logs never contain bodies or tokens. IMS does not collect Aadhaar (25 Nov 2026).
 - `FILE_STORAGE_ROOT` must be a private, backed-up folder (service job documents).
 
 `IMS_LIVE_DATABASE_URL=<supabase url> pytest tests/test_schema_drift.py` compares `app/models.py` with the live schema (read-only).
@@ -106,7 +106,7 @@ app/
   errors.py      {"error": {code, message, field_errors}} + DB constraint -> business error mapping
   models.py      ORM mirror of the 38 application tables
   security.py    SECURITY SEAM: sessions, login, RBAC (get_current_user / require / require_admin)
-  common.py      validators, money (Decimal, 2dp strings), dates (institute TZ), pagination, audit, numbering, Aadhaar crypto
+  common.py      validators, money (Decimal, 2dp strings), dates (institute TZ), pagination, audit, numbering, Aadhaar-field refusal
   ledger.py      the single money source: FIFO allocation, fee state, totals, daily/monthly series
   routers/       academics, enquiries, students, fees, services, jobs, bills, expenses, finance, dashboard, reports, admin
 ```
@@ -121,7 +121,7 @@ Routers hold both the route and its business rules; there is no separate reposit
 | 2 | Separate student WhatsApp number | `students.whatsapp_number` (defaults to mobile) | test_admissions |
 | 3 | Server-side IDs in approved formats | `common.next_code` (row-locked `number_sequences`) | test_admissions, test_fees |
 | 4 | 1 Admin + 4 Staff | DB trigger + `409 STAFF_ACCOUNT_LIMIT_REACHED`; `/staff` returns `account_limit` | test_auth_staff (incl. 6-thread race) |
-| 5 | Admin-only reversal + Aadhaar reveal | `require_admin` on reverse and `/aadhaar`; reveal audited | test_fees, test_admissions |
+| 5 | Admin-only reversal (Aadhaar reveal removed 25 Nov 2026) | `require_admin` on reverse; any Aadhaar field is refused | test_fees, test_admissions |
 | 6 | Paid bill lock, audited cancel + replacement | `BILL_LOCKED`, `/cancel`, new bill after cancel (`replaces`) | test_services |
 | 7 | created_by / paid_by / paid_at | `service_bills`; "bills I closed" uses `paid_by` | test_services, test_finance_reports |
 | 8 | Immutable receipt snapshots | `fee_receipts.snapshot` + `next_payment_date_snapshot` | test_fees |
@@ -147,16 +147,24 @@ Routers hold both the route and its business rules; there is no separate reposit
 ## Requests for Pranav (schema; nothing was changed by this backend)
 
 1. `student_installments.installment_no > 0` vs the UI's row 0 "Admission". Rows are stored as `display_no + 1` (`ledger.INSTALLMENT_NO_OFFSET`). Relaxing the check to `>= 0` removes the offset.
-2. `service_job_documents` has no sensitive flag. The backend mirrors the UI rule (Aadhaar / PAN / bank / Form 16, not photos). An `is_sensitive` column would make it explicit.
+2. `service_job_documents` has no sensitive flag. The backend mirrors the UI rule (PAN / bank / Form 16 and legacy Aadhaar copies, not photos). New Aadhaar uploads are refused. An `is_sensitive` column would make it explicit.
 3. Case-insensitive uniqueness for `course_subtypes(course_id, lower(name))` and `expense_categories(lower(name))`. It's checked in code today; a unique index closes the race.
 4. MySQL equivalents are needed for the partial index `one_non_cancelled_bill_per_job`, the account-limit trigger and `jsonb`.
 5. RLS currently allows only the two developer roles. The deployed API needs its own service role and policy.
 6. Seed decisions: `number_sequences` start values (receipts at 01201 and bills at 0301 like the demo, or 1?). Missing rows start at 1. Institute details are seeded from the receipt template by `app.cli seed` and editable in Settings.
 
+## Security patches (23 Nov 2026)
+
+Password sign-in with a forgotten-password path (every account gets a one-time recovery key at sign-in; without it the
+Admin resets staff, and `python -m app.cli reset-password <user>` works on the server), forced change of temporary passwords, a growing wait instead of a hard lock, encrypted
+documents, per-user request limits, stronger password hashing, production start checks, an append-only audit log, a
+hash-pinned package lock and an encrypted backup script. Run `sql/2026-11-23_security_patches.sql` before starting this
+backend. Go-live steps (Supabase lock-down, headers, backups): `../docs/SECURITY_DEPLOYMENT.md`.
+
 ## Requests for Dhruvank (security)
 
 1. `security.py` is a working seam, not the final implementation: scrypt hashes, opaque bearer tokens hashed into `user_sessions`, and a 5-try / 15-minute lockout. Replace its internals while keeping `get_current_user`, `require`, `require_any`, `require_admin` and `CurrentUser.can`.
-2. Agree the Aadhaar Fernet key and HMAC key (`AADHAAR_ENC_KEY`, `AADHAAR_HASH_KEY`). Data written with one key can't be read with another.
+2. Done (25 Nov 2026): IMS no longer collects Aadhaar. The document key is `DATA_ENC_KEY` (old name `AADHAAR_ENC_KEY` still read); `AADHAAR_HASH_KEY` is unused. See `../docs/DPDP_AADHAAR_REMOVAL.md`.
 3. `payments.delete_or_reverse` is treated as Admin-only, per the DB handoff (the UI lists it as delegable).
 4. Done: 30-minute idle timeout (`SESSION_IDLE_MINUTES`, via `last_activity_at`). Lockout race, password policy and username-timing fixes (QA-04/16/17) are on branch `dhruvank`.
 

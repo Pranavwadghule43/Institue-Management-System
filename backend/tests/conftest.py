@@ -14,8 +14,11 @@ logging.getLogger("pgserver").setLevel(logging.WARNING)
 _srv = pgserver.get_server(tempfile.mkdtemp(prefix="ims-pg-"), cleanup_mode="delete")
 TEST_DATABASE_URL = _srv.get_uri().replace("postgresql://", "postgresql+psycopg://", 1)
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
-os.environ["AADHAAR_ENC_KEY"] = Fernet.generate_key().decode()
-os.environ["AADHAAR_HASH_KEY"] = "test-hash-key"
+os.environ["DATA_ENC_KEY"] = Fernet.generate_key().decode()  # documents (25 Nov: renamed from AADHAAR_ENC_KEY)
+# Fast password hashes for the test suites (production refuses less than 131072).
+os.environ.setdefault("PASSWORD_HASH_N", "16384")
+# The web addresses the tests call from, so a developer's own backend/.env can't change the results.
+os.environ["FRONTEND_ORIGIN"] = "http://127.0.0.1:5173,http://localhost:5173"
 os.environ["FILE_STORAGE_ROOT"] = tempfile.mkdtemp(prefix="ims-files-")
 
 import itertools  # noqa: E402
@@ -69,6 +72,8 @@ PASSWORD = "secret-pass-1"
 
 @pytest.fixture(autouse=True)
 def fresh_db():
+    from app import ratelimit
+    ratelimit.reset()  # user ids restart in every test, so per-user request counts must too
     with engine.begin() as c:
         c.execute(text(f"TRUNCATE {TABLES} RESTART IDENTITY CASCADE"))
         c.execute(text("INSERT INTO account_limits (id) VALUES (1)"))

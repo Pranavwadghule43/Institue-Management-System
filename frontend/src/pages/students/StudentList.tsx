@@ -62,7 +62,7 @@ export default function StudentList() {
         <div className="table-toolbar">
           <div className="input-group">
             <Search />
-            <input className="input" placeholder="Name, mobile, Student ID or Aadhaar (12 digits / last 4)" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search students" />
+            <input className="input" placeholder="Name, mobile or Student ID" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search students" />
           </div>
           <select className="select" value={course} onChange={(e) => { setCourse(e.target.value); setBatch(''); }} aria-label="Course">
             <option value="">All courses</option>

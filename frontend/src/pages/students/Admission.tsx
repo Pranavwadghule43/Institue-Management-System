@@ -24,7 +24,7 @@ export default function Admission() {
   firstDueDefault.setMonth(firstDueDefault.getMonth() + 1);
 
   const [f, setF] = useState({
-    name: '', fatherName: '', dob: '', gender: 'Male' as 'Male' | 'Female', phone: '', sameWa: true, whatsapp: '', email: '', address: '', aadhaar: '',
+    name: '', fatherName: '', dob: '', gender: 'Male' as 'Male' | 'Female', phone: '', sameWa: true, whatsapp: '', email: '', address: '',
     courseId: '', subtypeIds: [] as number[], batchId: '', discount: 0 as number | '', initial: '' as number | '', mode: 'Cash' as PayMode, reference: '', installments: 3,
     firstDue: iso(firstDueDefault),
   });
@@ -91,7 +91,6 @@ export default function Admission() {
     if (!f.sameWa && f.whatsapp && !/^[6-9]\d{9}$/.test(f.whatsapp.replace(/\D/g, ''))) e.whatsapp = 'Enter a valid 10-digit number';
     if (f.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email)) e.email = 'Enter a valid email address';
     if (!f.address.trim()) e.address = 'Address is required';
-    if (f.aadhaar && f.aadhaar.replace(/\D/g, '').length !== 12) e.aadhaar = 'Aadhaar must be 12 digits';
     if (!f.courseId) e.courseId = 'Select a course';
     if (!batch) e.batchId = 'Select a compatible batch';
     if (f.courseId && coursesError && !course) e.courseId = 'Could not load courses. Retry and select a course.';
@@ -120,7 +119,7 @@ export default function Admission() {
         method: 'POST', idempotencyKey: key.current,
         body: {
           full_name: f.name.trim(), guardian_name: f.fatherName.trim(), dob: f.dob, gender: f.gender, mobile: f.phone,
-          whatsapp_number: f.sameWa ? null : f.whatsapp || null, email: f.email || null, address: f.address, aadhaar: f.aadhaar || null,
+          whatsapp_number: f.sameWa ? null : f.whatsapp || null, email: f.email || null, address: f.address,
           course_id: Number(f.courseId), course_subtype_ids: selectedSubtypeIds, time_slot_id: Number(f.batchId),
           discount: String(discount), paid_now: String(initial), payment_mode: initial > 0 ? f.mode : null, payment_reference: f.reference || null,
           installments: balance > 0 ? plan.map((r) => ({ due_date: r.due, amount: String(r.amount) })) : [],
@@ -185,9 +184,6 @@ export default function Admission() {
                 </Field>
                 <Field label="Email" error={err('email', 'email')} htmlFor="em">
                   <input id="em" type="email" className="input" value={f.email} onChange={(e) => set('email', e.target.value)} />
-                </Field>
-                <Field label="Aadhaar number" error={err('aadhaar', 'aadhaar')} hint={enquiry?.aadhaar_masked ? `Leave blank to keep ${enquiry.aadhaar_masked} from the enquiry` : 'Optional · stored encrypted, never shown in lists'} htmlFor="ad">
-                  <input id="ad" className="input num" inputMode="numeric" maxLength={14} value={f.aadhaar} onChange={(e) => set('aadhaar', e.target.value.replace(/[^\d]/g, '').replace(/(\d{4})(?=\d)/g, '$1 '))} />
                 </Field>
                 <Field label="Address" required error={err('address', 'address')} className="span-2" htmlFor="addr">
                   <textarea id="addr" className="textarea" rows={2} value={f.address} onChange={(e) => set('address', e.target.value)} />

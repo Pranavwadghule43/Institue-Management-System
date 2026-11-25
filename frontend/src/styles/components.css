@@ -2107,3 +2107,16 @@ html[data-theme='dark'] .toast {
 .wa-steps__list li.is-done::before { content: '✓'; background: #1fa855; border-color: #1fa855; color: #fff; }
 .wa-steps .callout { margin-bottom: 12px; }
 .subtype-edit { border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px; display: grid; gap: 8px; background: var(--surface-2); }
+
+/* 23 Nov security screens: temporary password, Forgot password */
+.security-setup { max-width: 440px; }
+.security-setup__head { display: flex; gap: 12px; align-items: flex-start; margin: 4px 0 16px; }
+.security-setup__head h1 { font-size: 19px; margin: 0 0 4px; }
+.security-setup__head p { margin: 0; color: var(--ink-2); font-size: 13px; }
+.security-setup__icon { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--primary-50); color: var(--primary-700); }
+.forgot { display: flex; flex-direction: column; gap: 12px; }
+.forgot h2 { font-size: 19px; margin: 0; }
+.forgot__staff { display: grid; gap: 4px; font-size: 13px; color: var(--ink-2); padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md, 8px); background: var(--surface-2); }
+.forgot__staff strong { color: var(--ink); }
+.forgot__admin { font-size: 14px; margin-top: 4px; }
+.recovery-key { width: 100%; height: 46px; text-align: center; font-size: 15px; letter-spacing: 0.04em; font-weight: 600; }

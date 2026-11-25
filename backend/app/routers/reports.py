@@ -26,6 +26,7 @@ from ..models import (
     ServiceJobItem, ServiceJobStaff, ServicePayment, Student, StudentInstallment, StudentPayment as P, TimeSlot, User,
 )
 from ..security import CurrentUser, require
+from ..ratelimit import limited
 from .academics import fmt_time
 from .jobs import OPEN
 
@@ -499,7 +500,7 @@ def run_report(slug: str, rq: ReportQuery = Depends(), p: Paging = Depends(pagin
         "page": p.page, "page_size": p.page_size, "total": len(rows), "pages": -(-len(rows) // p.page_size), "generated_at": now()}
 
 
-@router.get("/{slug}/export.xlsx")
+@router.get("/{slug}/export.xlsx", dependencies=[Depends(limited("export"))])
 def export_xlsx(slug: str, rq: ReportQuery = Depends(), db: Session = Depends(get_db), user: CurrentUser = Depends(require("reports.view"))):
     r = _report(slug)
     f = _filters(r, rq.date_from, rq.date_to, **rq.kw)

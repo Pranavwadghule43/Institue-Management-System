@@ -91,7 +91,10 @@ def test_change_password_idle_timeout_and_security_headers(client, admin):
 def test_ip_throttle(client):
     for i in range(20):
         client.post("/api/v1/auth/login", json={"username": f"nobody{i}", "password": "x"})
-    assert client.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD}).json()["error"]["code"] == "TOO_MANY_ATTEMPTS"
+    # 23 Nov (SEC-03): names that already failed from this address are stopped ...
+    assert client.post("/api/v1/auth/login", json={"username": "nobody3", "password": "x"}).json()["error"]["code"] == "TOO_MANY_ATTEMPTS"
+    # ... but 20 wrong tries on other names no longer keep the Admin out.
+    assert client.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD}).status_code == 200
 
 
 def test_staff_limit_is_four_and_deactivation_keeps_the_slot(admin, client):
@@ -143,6 +146,8 @@ def test_permissions_are_per_user_and_admin_only_cannot_be_delegated(admin, clie
     assert admin.put(f"/staff/{uid}/permissions", json={"codes": ["nope"]}).json()["error"]["code"] == "UNKNOWN_PERMISSION"
     ok(admin.put(f"/staff/{uid}/permissions", json={"codes": ["students.view", "fees.view"]}))
     staff = login(client, "neha.g", s["temporary_password"])
+    assert staff.get("/students").json()["error"]["code"] == "PASSWORD_CHANGE_REQUIRED"  # 23 Nov (SEC-05)
+    assert staff.post("/auth/change-password", json={"current_password": s["temporary_password"], "new_password": "neha-own-pass-77"}).status_code == 204
     assert set(ok(staff.get("/auth/me"))["permissions"]) == {"students.view", "fees.view"}
     assert staff.get("/students").status_code == 200 and staff.get("/expenses").status_code == 403
     ok(admin.put(f"/staff/{uid}/permissions", json={"codes": []}))

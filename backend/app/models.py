@@ -10,7 +10,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     JSON, BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint, Identity, Index, Integer,
-    LargeBinary, Numeric, SmallInteger, String, Text, Time, UniqueConstraint, Uuid, func, text,
+    Numeric, SmallInteger, String, Text, Time, UniqueConstraint, Uuid, func, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -98,6 +98,10 @@ class User(Base):
     failed_attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     locked_until: Mapped[datetime | None] = ts()
     last_login_at: Mapped[datetime | None] = ts()
+    # 23 Nov security patches (backend/sql/2026-11-23_security_patches.sql): forced change of temporary passwords, and
+    # the Admin's one-time recovery key for a forgotten password (scrypt hash only; the key itself is shown once).
+    must_change_password: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    recovery_key_hash: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = created()
     updated_at: Mapped[datetime] = updated()
     deleted_at: Mapped[datetime | None] = ts()
@@ -261,9 +265,9 @@ class Enquiry(Base):
     email: Mapped[str | None] = mapped_column(String(255))
     address: Mapped[str | None] = mapped_column(Text)
     reference: Mapped[str | None] = mapped_column(Text)
-    aadhaar_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
-    aadhaar_lookup_hash: Mapped[str | None] = mapped_column(String(128))
-    aadhaar_last4: Mapped[str | None] = mapped_column(String(4))
+    # 25 Nov 2026: the legacy aadhaar_ciphertext / aadhaar_lookup_hash / aadhaar_last4 columns are no longer mapped. IMS
+    # neither reads nor writes them; they stay in the database (nullable) until the approved deletion migration
+    # (backend/sql/2026-11-25_aadhaar_DELETE_requires_approval.sql) removes them.
     course_id: Mapped[int | None] = fk("courses.id")
     course_subtype_id: Mapped[int | None] = fk("course_subtypes.id")  # first chosen sub-type; full list in enquiry_course_subtypes
     status: Mapped[str] = mapped_column(String(20), server_default=text("'New'"))
@@ -323,9 +327,9 @@ class Student(Base):
     whatsapp_number: Mapped[str | None] = mapped_column(String(20))
     email: Mapped[str | None] = mapped_column(String(255))
     address: Mapped[str] = mapped_column(Text)
-    aadhaar_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
-    aadhaar_lookup_hash: Mapped[str | None] = mapped_column(String(128))
-    aadhaar_last4: Mapped[str | None] = mapped_column(String(4))
+    # 25 Nov 2026: the legacy aadhaar_ciphertext / aadhaar_lookup_hash / aadhaar_last4 columns are no longer mapped. IMS
+    # neither reads nor writes them; they stay in the database (nullable) until the approved deletion migration
+    # (backend/sql/2026-11-25_aadhaar_DELETE_requires_approval.sql) removes them.
     education_qualification: Mapped[str | None] = mapped_column(String(200))
     photo_file_id: Mapped[int | None] = fk("files.id")
     course_id: Mapped[int] = fk("courses.id", nullable=False)
