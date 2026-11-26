@@ -5,7 +5,8 @@ One backup = one encrypted file holding the full database dump plus the service-
 
 Usage (Windows PowerShell, from the backend folder, with the venv's python):
     .venv\\Scripts\\python scripts\\backup_db.py new-key                       # once: prints a backup key; keep it in a password manager
-    .venv\\Scripts\\python scripts\\backup_db.py backup  --out D:\\IMS-Backups  # make a backup (keeps the newest 30)
+    .venv\\Scripts\\python scripts\\backup_db.py backup  --out D:\\IMS-Backups  # make a backup, then expire old ones (below)
+    .venv\\Scripts\\python scripts\\backup_db.py prune   --out D:\\IMS-Backups  # expire old backups only (dry run: add --dry-run)
     .venv\\Scripts\\python scripts\\backup_db.py verify  D:\\IMS-Backups\\ims-backup-....imsbak
     .venv\\Scripts\\python scripts\\backup_db.py restore D:\\IMS-Backups\\ims-backup-....imsbak --to-url <SPARE database URL> --files-to D:\\restore-files
 
@@ -13,6 +14,8 @@ Settings come from environment variables (or the same --env-file the API uses):
     DATABASE_URL       database to back up (read access to every table is enough)
     BACKUP_ENC_KEY     Fernet key from `new-key`. Different from DATA_ENC_KEY, and stored separately from the backups.
     FILE_STORAGE_ROOT  documents folder to include (optional)
+    BACKUP_KEEP_DAYS   backups older than this many days are deleted (default 30). The newest backup is never deleted,
+                       and at most 30 are kept. Expiry matters: a backup keeps whatever was in the database that day.
     PG_BIN             folder with pg_dump / pg_restore of the SAME or NEWER major version as the server (optional;
                        defaults to PATH, then the PostgreSQL that ships with pgserver)
 
@@ -35,6 +38,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 MAGIC = b"IMSBAK1\n"
 KEEP = 30
+KEEP_DAYS_DEFAULT = 30
 
 
 def load_env_file(path: str | None) -> None:
@@ -119,11 +123,43 @@ def backup(out: Path) -> Path:
             z.writestr("README.txt", f"IMS backup {stamp}\nDatabase: pg_dump custom format\nDocuments: {count} files (already encrypted with DATA_ENC_KEY)\n")
     target = out / f"ims-backup-{stamp}.imsbak"
     target.write_bytes(MAGIC + fernet().encrypt(buf.getvalue()))
-    old = sorted(out.glob("ims-backup-*.imsbak"))[:-KEEP]
-    for f in old:
-        f.unlink()
-    print(f"Backup written: {target} ({target.stat().st_size // 1024} KB, {count} documents). Removed {len(old)} old backup(s).")
+    print(f"Backup written: {target} ({target.stat().st_size // 1024} KB, {count} documents).")
+    prune(out)
     return target
+
+
+def keep_days() -> int:
+    raw = os.environ.get("BACKUP_KEEP_DAYS", str(KEEP_DAYS_DEFAULT))
+    if not raw.isdigit() or int(raw) < 1:
+        sys.exit("BACKUP_KEEP_DAYS must be a whole number of days, 1 or more.")
+    return int(raw)
+
+
+def backup_time(f: Path) -> datetime:
+    try:
+        return datetime.strptime(f.name[len("ims-backup-"):-len(".imsbak")], "%Y%m%d-%H%M%S")
+    except ValueError:
+        return datetime.fromtimestamp(f.stat().st_mtime)
+
+
+def prune(out: Path, dry_run: bool = False) -> list[Path]:
+    """Delete backups older than BACKUP_KEEP_DAYS (and beyond the newest KEEP). Never deletes the newest backup."""
+    files = sorted(out.glob("ims-backup-*.imsbak"), key=backup_time)
+    if not files:
+        print("No backups found.")
+        return []
+    days = keep_days()
+    cutoff = datetime.now().timestamp() - days * 86400
+    newest = files[-1]
+    expired = [f for i, f in enumerate(files)
+               if f != newest and (backup_time(f).timestamp() < cutoff or i < len(files) - KEEP)]
+    for f in expired:
+        if not dry_run:
+            f.unlink()
+    verb = "Would delete" if dry_run else "Deleted"
+    print(f"{verb} {len(expired)} backup(s) older than {days} days or beyond the newest {KEEP}; kept {len(files) - len(expired)}"
+          f" (newest: {newest.name}).")
+    return expired
 
 
 def open_backup(path: Path) -> zipfile.ZipFile:
@@ -182,6 +218,9 @@ def main(argv: list[str]) -> None:
     sub.add_parser("new-key")
     b = sub.add_parser("backup")
     b.add_argument("--out", required=True, type=Path)
+    pr = sub.add_parser("prune")
+    pr.add_argument("--out", required=True, type=Path)
+    pr.add_argument("--dry-run", action="store_true")
     v = sub.add_parser("verify")
     v.add_argument("file", type=Path)
     r = sub.add_parser("restore")
@@ -197,6 +236,8 @@ def main(argv: list[str]) -> None:
         if not os.environ.get("DATABASE_URL"):
             sys.exit("Set DATABASE_URL or pass --env-file.")
         backup(a.out)
+    elif a.cmd == "prune":
+        prune(a.out, a.dry_run)
     elif a.cmd == "verify":
         verify(a.file)
     else:

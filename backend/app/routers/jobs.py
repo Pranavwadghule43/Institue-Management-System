@@ -225,11 +225,11 @@ def events(code: str, db: Session = Depends(get_db), _: CurrentUser = Depends(re
 # ----------------------------------------------------------------- documents
 
 ALLOWED = {"pdf": ("application/pdf", b"%PDF-"), "png": ("image/png", b"\x89PNG\r\n\x1a\n"), "jpg": ("image/jpeg", b"\xff\xd8\xff"), "jpeg": ("image/jpeg", b"\xff\xd8\xff")}
-_SENSITIVE = re.compile(r"aadhaar|aadhar|\bpan\b|bank|form ?16|passbook|cheque|voter|licen[cs]e|passport(?! ?photo)", re.I)
-# 25 Nov 2026: IMS no longer accepts Aadhaar documents. ("aadhaar" stays in _SENSITIVE above so documents uploaded before
-# this change remain restricted until the approved cleanup removes them.) "Udyog Aadhaar" is an MSME business
-# registration, not a person's Aadhaar card, so it is not refused.
-_AADHAAR_WORD = re.compile(r"(?<![a-z])(?P<prev>[a-z]+[^a-z]+)?(?:aadhaa?r|aadhar|adhaar|adhar)(?:card)?(?![a-z])")
+_SENSITIVE = re.compile(r"\bpan\b|bank|form ?16|passbook|cheque|voter|licen[cs]e|passport(?! ?photo)", re.I)
+# IMS does not accept Aadhaar documents (25 Nov 2026; old ones removed by scripts/aadhaar_documents.py, 26 Nov). The
+# refusal happens before the file is read or stored, and neither the file name nor its contents are logged.
+# "Udyog Aadhaar" is an MSME business registration, not a person's Aadhaar card, so it is not refused.
+_AADHAAR_WORD = re.compile(r"(?<![a-z])(?P<prev>[a-z]+[^a-z]+)?(?:aadhaa?r|aadhar|adhaar|adhar|uidai)(?:card)?(?![a-z])")
 
 
 def mentions_aadhaar(text: str) -> bool:

@@ -1,98 +1,111 @@
 # Aadhaar removal (DPDP data minimisation): runbook
 
-Branch: `dpdp-aadhaar-removal`, based on `dhruvank-security-patches` (56d37cf). Prepared 25 Nov 2026 by Dhruvank (QA/security).
+Branch `dhruvank-dpdp-aadhaar-removal`. Code removal: 25 Nov 2026. Final removal and safeguards: 26 Nov 2026.
+Owner: Dhruvank (QA/security). Supabase changes are applied by Pranav through the normal deployment process.
 Tested on synthetic data only. No real Aadhaar number appears in this file, the tests, the scripts or their output.
 
-## 1. Decision and reason
+## 1. Decision
 
-IMS no longer collects, stores, shows, searches or reveals Aadhaar numbers or Aadhaar card copies.
+IMS does not collect, store or retain anyone's personal Aadhaar information (team instruction, 26 Nov 2026; no separate
+client approval needed for this cleanup).
 
-- IMS has no business need for Aadhaar. Admission, enquiries, fees and service jobs work with name, guardian name, date
-  of birth, mobile and address.
-- DPDP Act 2023 s.6(1) / s.8(7) and the data-minimisation principle say: collect only what the purpose needs, and erase it when the purpose is served.
-- The UIDAI rules for an organisation that stores Aadhaar numbers (Aadhaar Data Vault, reference keys, HSM-held keys)
-  are heavier than anything IMS needs. The simplest compliant position is not to hold Aadhaar at all.
-- No replacement identity document is required. Nothing else is made mandatory in its place.
+- IMS has no business need for Aadhaar. Admission, enquiries, fees and service jobs work with name, guardian name,
+  date of birth, mobile and address.
+- No other identity document replaces it, and nothing new becomes mandatory.
+- "Udyog Aadhaar" is an MSME business registration, not a person's Aadhaar, and stays allowed as a document type.
 
-## 2. What changed in the code (done, tested)
+Supabase status checked by the team before the migration: the six columns hold zero non-null values, and the document
+metadata tables hold zero Aadhaar records.
+
+## 2. What changed in the code
 
 | Area | Change |
 |---|---|
-| API input | Every request model refuses any field whose name looks like Aadhaar (any spelling: `aadhaar`, `aadhar`, `adhaar`, `adhar`, `uidai`...) with `422 aadhaar_not_collected` and the message "Aadhaar is no longer collected by IMS. Remove this field." The value is never echoed back. |
-| API output | `aadhaar_masked` was removed from students, enquiries and lists. `GET /students/{code}/aadhaar` and `GET /enquiries/{code}/aadhaar` were removed (404). |
-| Search | Student / global search no longer matches Aadhaar (name, guardian, Student ID, mobile only). |
-| Admission | An enquiry's old Aadhaar value is never copied to the student. |
-| Documents | Uploads typed or named as Aadhaar are refused with `AADHAAR_NOT_COLLECTED`. "Udyog Aadhaar" (MSME registration) is still allowed. Existing documents are untouched until the approved deletion. |
-| Models | The six Aadhaar columns are no longer mapped, so the app works before and after they are dropped. |
-| Settings | The document key is now `DATA_ENC_KEY`. The old name `AADHAAR_ENC_KEY` is still read, so existing servers need no change. `AADHAAR_HASH_KEY` is no longer used. |
-| Frontend | Aadhaar fields were removed from Admission, Enquiries and Student Profile, along with the reveal button, the search placeholders and the "Aadhaar Card" document type suggestion. |
-| Rate limits | The "aadhaar" reveal bucket was removed. |
+| API input | Every request model refuses any field named like Aadhaar (`aadhaar`, `aadhar`, `adhaar`, `adhar`, `uidai`, any case or suffix). The answer is `422 aadhaar_not_collected`. The value is never stored, echoed back or logged. |
+| API output | No Aadhaar field in any response. The two reveal endpoints are removed (404). |
+| Search | Name, guardian, Student ID and mobile only. |
+| Admission | Nothing from an enquiry's old Aadhaar is copied (the columns are gone). |
+| Documents | Uploads typed or named as Aadhaar or UIDAI are refused with `AADHAAR_NOT_COLLECTED` before the file is read or saved. Nothing is written to storage, and the file name is not logged. "Udyog Aadhaar" is allowed. |
+| Models | No Aadhaar columns. `tests/test_aadhaar_final.py` fails if one is ever added back. |
+| Crypto | The Aadhaar hashing, last-4 masking and Aadhaar decryption are removed. Documents are still encrypted with `DATA_ENC_KEY`. The old variable name `AADHAAR_ENC_KEY` is still read, so a server configured with it can still open its encrypted documents; it is the document key, not an Aadhaar feature. `AADHAAR_HASH_KEY` is unused and can be deleted from env files. |
+| Frontend | No Aadhaar field, line, reveal button, hint or document suggestion on any screen. |
+| Reports, exports, PDFs | All 25 Excel exports and the receipt and bill print data contain no Aadhaar field or number. |
 
-## 3. Database and files: order of work
+## 3. Database and storage: order of work
 
-| Step | File | Kind | Who approves |
-|---|---|---|---|
-| 1 | `backend/sql/2026-11-25_aadhaar_inventory_READ_ONLY.sql` | Read only. Counts columns, values, documents and audit entries. Prints no values. | Pranav runs it on the shared DB (Dhruvank has no Supabase access). Save the output. |
-| 2 | Deploy the app from this branch | Code | Pranav / Devanshu review the PR |
-| 3 | `backend/sql/2026-11-25_aadhaar_block_new_values.sql` | Schema only: triggers that refuse NEW Aadhaar values and Aadhaar documents. Clearing an old value is still allowed. Idempotent. | Pranav (shared-DB change) |
-| 4 | `python scripts/aadhaar_documents.py --env-file <env> inventory` | Read only. Lists Aadhaar documents by id, job, date and size, never by file name. | Whoever runs the server |
-| 5 | Backup: `scripts/backup_db.py backup`, then `verify` | Creates an encrypted backup | Pranav |
-| 6 | **Written approval** from Updaate Computers to delete stored Aadhaar data | Business / legal | Client (Data Fiduciary) |
-| 7 | `backend/sql/2026-11-25_aadhaar_DELETE_requires_approval.sql` | **Destructive.** Clears values, drops the 6 columns, marks Aadhaar document rows deleted, and writes an audit entry with counts only. Idempotent. | Only after step 6 |
-| 8 | `python scripts/aadhaar_documents.py ... delete` (dry run), then `delete --confirm` | **Destructive.** Removes the files from `FILE_STORAGE_ROOT`. | Only after step 6 |
-| 9 | Re-run step 1 | Read only. It must show no Aadhaar columns, values or visible documents. | Pranav |
-| 10 | Off-database copies (see section 5) | Manual | Client |
-| 11 | Destroy the pre-deletion backup after the agreed rollback window (suggested 30 days) | Manual | Client |
+| Step | What | Who |
+|---|---|---|
+| 0 | Deploy a backend built from `dhruvank-dpdp-aadhaar-removal`. Older builds (for example `integration/mysql84-dhruvank` @ 7ec0c92) still read the Aadhaar columns and fail once they are dropped. | Pranav |
+| 1 | Backup: `python scripts/backup_db.py --env-file <env> backup --out <dir>`, then `... verify <file>` | Pranav |
+| 2 | `psql "<DATABASE_URL>" -v ON_ERROR_STOP=1 -f sql/2026-11-26_aadhaar_final_removal.sql` (or run the whole file in the Supabase SQL editor) | Pranav |
+| 3 | `sql/2026-11-25_aadhaar_inventory_READ_ONLY.sql`: must show "columns removed - none stored" and 0 Aadhaar documents | Pranav |
+| 4 | On the machine that holds `FILE_STORAGE_ROOT` for the live API: `python scripts/aadhaar_documents.py --env-file <env> inventory`, then `delete` (dry run), then `delete --confirm` | Pranav |
+| 5 | Backup expiry: set `BACKUP_KEEP_DAYS` (default 30) and run `backup_db.py prune --out <dir>` once; `backup` prunes automatically afterwards | Pranav |
 
-Steps 1 to 5 can go ahead now. Steps 7, 8, 10 and 11 wait for step 6.
+**What the migration does.** It runs as one transaction: either everything is done or nothing is.
+- **Preflight.** It stops with "Stopped, nothing changed" if any of the six columns still holds a value, or if a view, policy, or an index or constraint that also covers another column depends on them. Values are never printed.
+- **Removal.** It drops the 25 Nov guard triggers if present, then the six columns (RESTRICT: never CASCADE). Indexes and constraints that exist only for them go with them, and are listed first.
+- **Safeguards it installs:**
+  - a document trigger (Aadhaar or UIDAI type or file name refused; Udyog allowed);
+  - an event trigger that refuses any new Aadhaar-named column in `public`. If the role cannot create event triggers, it prints a NOTICE and continues; the app tests still guard the models.
+- **Audit.** One audit entry, holding column names only.
+- **Repeat runs.** Safe to run twice; the second run drops nothing and adds no audit entry.
 
-## 4. Retention: is there a reason to keep the old Aadhaar values?
+**What it does not touch.** Every other table, row, column, index, constraint, trigger, RLS policy and grant. On the
+rehearsal copy, all 39 tables' data and 794 schema lines were identical before and after.
 
-None was found. No GST, income-tax or education rule requires a private computer institute to keep Aadhaar numbers.
-Fee receipts and service bills (the records GST and income tax care about) do not contain Aadhaar and are kept.
-Before step 7 the client confirms that no dispute, police request or other legal hold covers these records. If one
-does, delete everything except the records under hold, and delete those once the hold ends.
+## 4. Storage, temporary files, exports and backups
 
-## 5. Places outside the database to check (client / staff)
+- **Document storage** (`FILE_STORAGE_ROOT`): `scripts/aadhaar_documents.py` finds Aadhaar documents by metadata,
+  including ones already deleted in the app. It also finds orphan files: files on disk that no `files` row points to,
+  which the app can never show.
+  - `delete --confirm` overwrites and removes those files.
+  - It scrubs the old file name, type and checksum from the metadata, keeping the rows marked deleted so job history stays consistent.
+  - It writes one audit entry with counts only.
+- **Temporary uploads:** the API reads uploads in memory. FastAPI's temporary upload buffer is deleted when the request
+  ends. A refused Aadhaar upload is rejected before anything is written to storage (tested: storage file count unchanged).
+- **Exports and PDFs:** built in memory, never stored on the server. Copies people downloaded earlier (laptops, phones,
+  WhatsApp) are outside IMS; staff should delete any that show Aadhaar.
+- **App backups** (`backup_db.py`): encrypted, and kept for `BACKUP_KEEP_DAYS` days (default 30, at most 30 files). The newest
+  backup is never deleted. Backups taken before the migration contain the empty columns only. Backups from before 25 Nov
+  could still hold Aadhaar values; they expire under this rule.
+- **Supabase's own backups and point-in-time recovery:** kept for the plan's retention period and then expire on their own;
+  they cannot be edited. Note the migration date: after the retention period, no Supabase backup holds the old columns.
 
-- **Server document folder:** handled by step 8. Files soft-deleted in the app before today are included.
-- **Supabase backups / point-in-time recovery:** the old values age out with the plan's backup retention. Note the date.
-- **Laptop copies, pen drives, old Excel exports, WhatsApp chats and email** on office computers and phones.
-  Exports never contained full Aadhaar numbers, but staff may have photographed or forwarded card copies.
-- **Paper:** photocopies of Aadhaar cards in admission files. Return them or shred them, according to the client's decision.
-- **The "Aadhaar Update" / "Aadhar Card Print" services.** These are services the shop sells, not data IMS needs. They stay
-  in the service list. Staff must not type Aadhaar numbers into job notes, and must not upload card copies (the upload is
-  now refused). Return originals to the customer after the job.
+## 5. Outside IMS (staff)
 
-## 6. Leftover mentions of "Aadhaar" in the repository (classified)
+- Paper photocopies of Aadhaar cards in admission files: return or shred them.
+- The shop's own services ("Aadhaar Update" in the service list, "Aadhar Card Print" in the rate card printed on bills) are
+  services sold at the counter. IMS stores only the service name and price, never the customer's Aadhaar. Staff must not
+  type Aadhaar numbers into job notes, and must return the original documents.
+
+## 6. Leftover mentions of "Aadhaar" in the code (classified)
 
 | Where | Why it stays |
 |---|---|
-| `common.py` `AADHAAR_FIELD`, `In._no_aadhaar` | The refusal itself |
-| `jobs.py` `mentions_aadhaar`, `refuse_aadhaar_document`, `_SENSITIVE` | The upload refusal. Legacy documents still count as sensitive until they are deleted. |
-| `common.py` `_CATEGORY_RULES`, `admin.py` security filter, `Admin.tsx` tone | So historical audit entries (`AADHAAR_REVEALED`, the new `AADHAAR_DATA_DELETED`) still show under Security |
-| `models.py`, `students.py`, `config.py` comments | Explain the removal and the key alias |
-| `PrintDocs.tsx` "Aadhar Card Print", "Udyog Adhar" | Names of services the shop sells (rate card). Client decision. |
-| `IMPLEMENTATION_REPORT.md`, `docs/IMS_PERFORMANCE_WHATSAPP.md` | Historical reports, left as written |
-| `backend/sql/2026-11-25_*`, `scripts/aadhaar_documents.py`, tests | The removal tooling and its tests |
-| Older migrations in `backend/sql/` and Supabase migrations | Historical. The delete migration supersedes them. |
+| `common.py` `AADHAAR_FIELD`, `In._no_aadhaar`; `jobs.py` `mentions_aadhaar`, `refuse_aadhaar_document` | The refusal itself |
+| `config.py` alias `aadhaar_enc_key` | Old name of the document key, so existing servers can still decrypt documents |
+| `common.py` `_CATEGORY_RULES`, `admin.py` filter, `Admin.tsx` tone | Historical audit entries (`AADHAAR_REVEALED`, `AADHAAR_COLUMNS_DROPPED`, ...) still show under Security. The audit log is append-only and is not edited. |
+| `PrintDocs.tsx` "Aadhar Card Print", "Udyog Adhar" | Rate-card text of services the shop sells, not data |
+| `sql/2026-11-26_*`, `sql/2026-11-25_*inventory*`, `scripts/aadhaar_documents.py`, tests | Removal tooling and its tests |
 
-## 7. Acceptance tests
+## 7. Tests (26 Nov 2026)
 
-Automated (`pytest`): `test_aadhaar_is_no_longer_collected_anywhere`, `test_d3_03_no_aadhaar_stored_shown_or_revealed`,
-the upload refusal and Udyog exception in `test_services.py`, and `test_old_aadhaar_key_name_still_works_for_documents`.
-Result on 25 Nov 2026: 150 passed, 1 skipped, 5 xfailed (known, unrelated).
-
-Manual (browser, synthetic data):
-1. New Enquiry, Admission and Edit Student show no Aadhaar field. Each form saves.
-2. Student Profile shows no Aadhaar line and no reveal button.
-3. Searching by a 12-digit number returns nothing new. Searching by name or mobile still works.
-4. Service job: uploading a file typed "Aadhaar Card" is refused with a clear message. "Udyog Aadhaar" and "PAN Card" upload.
-5. Excel exports contain no Aadhaar column.
-6. After steps 3 and 7 (on a disposable copy): admission still works. A direct SQL insert of an Aadhaar value is refused.
+- **Backend `pytest`:** 156 passed, 1 skipped, 5 xfailed (known, unrelated).
+- **Migration rehearsal** on a Supabase-like copy with the 25 Nov guard and two Aadhaar indexes (`secprobe/final_mig_run.sh`):
+  - backup verified;
+  - 6 columns and 2 indexes dropped;
+  - everything else identical;
+  - second run a no-op;
+  - inventory clean.
+- **Migration safety and guard tests** (`secprobe/final_mig_tests.sh`): 19/19.
+- **Document cleanup** on the copy: 6 Aadhaar documents and 1 orphan file removed, metadata scrubbed, the other document untouched, inventory 0/0 afterwards.
+- **API regression** on the migrated copy (`secprobe/final_api.py`): 31/31.
+- **Browser:** Aadhaar walk-through 15/15; UI admission saved; 29 screens open with no errors and 0 CSP violations.
+- **Frontend:** `tsc` clean, `npm test` 6/6, build OK.
 
 ## 8. Rollback
 
-Code: revert the branch. The old columns are only unmapped, not dropped, until step 7.
-Database after step 7: restore `students` and `enquiries` from the step 5 backup into a spare database and copy back.
-That is possible only during the rollback window. After that, the deletion is final, which is the purpose.
+There is no data to restore: the columns were empty. If the old code must be run again, restore the step 1 backup into a
+spare database, or re-add the six empty columns by hand. Re-adding them needs the event trigger dropped first, which is
+deliberate.

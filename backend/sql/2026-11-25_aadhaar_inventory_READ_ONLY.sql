@@ -33,9 +33,10 @@ SELECT '1 constraint', n.nspname || '.' || conname, conrelid::regclass::text
   FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
  WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND pg_get_constraintdef(c.oid) ~* '(a+d+h*a+a*r|adhar)'
 UNION ALL
-SELECT '1 function', n.nspname || '.' || p.proname, 'definition mentions Aadhaar'
+SELECT '1 function', n.nspname || '.' || p.proname,
+       CASE WHEN p.proname LIKE 'ims_refuse_aadhaar_%' THEN 'safeguard (expected): refuses Aadhaar' ELSE 'definition mentions Aadhaar' END
   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
- WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND p.prokind = 'f'
+ WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_temp%' AND p.prokind = 'f'
    AND (p.proname ~* '(a+d+h*a+a*r|adhar)' OR p.prosrc ~* '(a+d+h*a+a*r|adhar)')
 UNION ALL
 SELECT '1 view', schemaname || '.' || viewname, 'definition mentions Aadhaar'

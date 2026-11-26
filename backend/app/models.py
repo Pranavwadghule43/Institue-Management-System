@@ -265,9 +265,8 @@ class Enquiry(Base):
     email: Mapped[str | None] = mapped_column(String(255))
     address: Mapped[str | None] = mapped_column(Text)
     reference: Mapped[str | None] = mapped_column(Text)
-    # 25 Nov 2026: the legacy aadhaar_ciphertext / aadhaar_lookup_hash / aadhaar_last4 columns are no longer mapped. IMS
-    # neither reads nor writes them; they stay in the database (nullable) until the approved deletion migration
-    # (backend/sql/2026-11-25_aadhaar_DELETE_requires_approval.sql) removes them.
+    # IMS does not collect or store Aadhaar (26 Nov 2026). The old Aadhaar columns are dropped by
+    # backend/sql/2026-11-26_aadhaar_final_removal.sql; nothing here may reintroduce them (tests/test_aadhaar_final.py).
     course_id: Mapped[int | None] = fk("courses.id")
     course_subtype_id: Mapped[int | None] = fk("course_subtypes.id")  # first chosen sub-type; full list in enquiry_course_subtypes
     status: Mapped[str] = mapped_column(String(20), server_default=text("'New'"))
@@ -327,9 +326,8 @@ class Student(Base):
     whatsapp_number: Mapped[str | None] = mapped_column(String(20))
     email: Mapped[str | None] = mapped_column(String(255))
     address: Mapped[str] = mapped_column(Text)
-    # 25 Nov 2026: the legacy aadhaar_ciphertext / aadhaar_lookup_hash / aadhaar_last4 columns are no longer mapped. IMS
-    # neither reads nor writes them; they stay in the database (nullable) until the approved deletion migration
-    # (backend/sql/2026-11-25_aadhaar_DELETE_requires_approval.sql) removes them.
+    # IMS does not collect or store Aadhaar (26 Nov 2026). The old Aadhaar columns are dropped by
+    # backend/sql/2026-11-26_aadhaar_final_removal.sql; nothing here may reintroduce them (tests/test_aadhaar_final.py).
     education_qualification: Mapped[str | None] = mapped_column(String(200))
     photo_file_id: Mapped[int | None] = fk("files.id")
     course_id: Mapped[int] = fk("courses.id", nullable=False)

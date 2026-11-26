@@ -109,7 +109,7 @@ activities or safety. It does not cover consent for admission and fees, so plan 
 | Service-login username | 90 days after the bill | Purpose served | Clear the column |
 | Audit log, login attempts, session records | At least 1 year (suggested 2 years) | DPDP Rule 6 / 8(3); CERT-In 180 days | Purge after the period (needs an audit-trigger exception) |
 | WhatsApp delivery records | 1 year | Rule 8(3) | Purge |
-| Encrypted backups | Rolling `<30–90>` days | Continuity (Rule 6) | Delete older files |
+| Encrypted backups | Rolling 30 days (`BACKUP_KEEP_DAYS`, newest always kept); Supabase backups per plan | Continuity (Rule 6) | `backup_db.py prune` (automatic after each backup) |
 | Staff accounts | Disable on exit; delete personal fields after 1 year | Purpose served | Admin |
 
 From 13 May 2027, give at least 48 hours' notice before erasing data on the "no longer needed" ground (Rule 8 / Third
